@@ -1,0 +1,24 @@
+# Flutter/Dart/Pub related
+.dart_tool/
+.packages
+.pub-cache/
+.pub/
+android/.gradle/
+# Build outputs
+build/
+ios/Pods/
+android/.gradle/
+android/build/
+**/GeneratedPluginRegistrant.java
+**/GeneratedPluginRegistrant.swift
+
+# IDE files
+.idea/
+.vscode/
+*.iml
+
+# Logs
+*.log
+
+# macOS
+.DS_Store
