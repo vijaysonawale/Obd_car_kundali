@@ -35,7 +35,8 @@ class TripData {
     return '⚠ Poor';
   }
 
-  String get summary => '''Car Kundali - Trip Summary
+  String get summary =>
+      '''Car Kundali - Trip Summary
 ─────────────────────────
 Distance   : ${distanceKm.toStringAsFixed(2)} km
 Duration   : ${_formatDuration(duration)}
@@ -67,7 +68,7 @@ class TripScreen extends StatelessWidget {
       backgroundColor: Colors.grey.shade100,
       appBar: AppBar(
         title: const Text('Trip Computer'),
-        backgroundColor: Colors.blue.shade800,
+        backgroundColor: Colors.black87,
         foregroundColor: Colors.white,
         actions: [
           IconButton(
@@ -84,23 +85,78 @@ class TripScreen extends StatelessWidget {
           _buildEconomyHero(context),
           const SizedBox(height: 16),
           _buildCard('📍 Distance & Time', [
-            _buildRow('Distance Traveled', '${tripData.distanceKm.toStringAsFixed(2)} km', Icons.straighten, Colors.blue),
-            _buildRow('Trip Duration', TripData._formatDuration(tripData.duration), Icons.timer, Colors.indigo),
-            _buildRow('Average Speed', '${tripData.avgSpeedKmh.toStringAsFixed(1)} km/h', Icons.speed, Colors.teal),
-            _buildRow('Maximum Speed', '${tripData.maxSpeedKmh.toStringAsFixed(1)} km/h', Icons.speed_outlined, Colors.red),
+            _buildRow(
+              'Distance Traveled',
+              '${tripData.distanceKm.toStringAsFixed(2)} km',
+              Icons.straighten,
+              Colors.blue,
+            ),
+            _buildRow(
+              'Trip Duration',
+              TripData._formatDuration(tripData.duration),
+              Icons.timer,
+              Colors.indigo,
+            ),
+            _buildRow(
+              'Average Speed',
+              '${tripData.avgSpeedKmh.toStringAsFixed(1)} km/h',
+              Icons.speed,
+              Colors.teal,
+            ),
+            _buildRow(
+              'Maximum Speed',
+              '${tripData.maxSpeedKmh.toStringAsFixed(1)} km/h',
+              Icons.speed_outlined,
+              Colors.red,
+            ),
           ]),
           const SizedBox(height: 12),
           _buildCard('⛽ Fuel Economy', [
-            _buildRow('Fuel Consumed', '${tripData.fuelConsumedL.toStringAsFixed(2)} L', Icons.local_gas_station, Colors.orange),
-            _buildRow('Average Economy', '${tripData.avgFuelL100km.toStringAsFixed(1)} L/100km', Icons.eco, Colors.green),
-            _buildRow('Current Economy', '${tripData.currentFuelL100km.toStringAsFixed(1)} L/100km', Icons.flash_on, Colors.blue),
-            _buildRow('Efficiency Rating', tripData.fuelEfficiencyRating, Icons.star, Colors.amber),
+            _buildRow(
+              'Fuel Consumed',
+              '${tripData.fuelConsumedL.toStringAsFixed(2)} L',
+              Icons.local_gas_station,
+              Colors.orange,
+            ),
+            _buildRow(
+              'Average Economy',
+              '${tripData.avgFuelL100km.toStringAsFixed(1)} L/100km',
+              Icons.eco,
+              Colors.green,
+            ),
+            _buildRow(
+              'Current Economy',
+              '${tripData.currentFuelL100km.toStringAsFixed(1)} L/100km',
+              Icons.flash_on,
+              Colors.blue,
+            ),
+            _buildRow(
+              'Efficiency Rating',
+              tripData.fuelEfficiencyRating,
+              Icons.star,
+              Colors.amber,
+            ),
           ]),
           const SizedBox(height: 12),
           _buildCard('🔧 Engine Stats', [
-            _buildRow('Average RPM', '${tripData.avgRpm.toStringAsFixed(0)} rpm', Icons.settings_input_component, Colors.purple),
-            _buildRow('Max Coolant Temp', '${tripData.maxCoolantTemp.toStringAsFixed(0)}°C', Icons.thermostat, tripData.maxCoolantTemp > 100 ? Colors.red : Colors.orange),
-            _buildRow('Trip Started', '${tripData.tripStart.day}/${tripData.tripStart.month}/${tripData.tripStart.year} ${tripData.tripStart.hour}:${tripData.tripStart.minute.toString().padLeft(2, '0')}', Icons.calendar_today, Colors.grey),
+            _buildRow(
+              'Average RPM',
+              '${tripData.avgRpm.toStringAsFixed(0)} rpm',
+              Icons.settings_input_component,
+              Colors.purple,
+            ),
+            _buildRow(
+              'Max Coolant Temp',
+              '${tripData.maxCoolantTemp.toStringAsFixed(0)}°C',
+              Icons.thermostat,
+              tripData.maxCoolantTemp > 100 ? Colors.red : Colors.orange,
+            ),
+            _buildRow(
+              'Trip Started',
+              '${tripData.tripStart.day}/${tripData.tripStart.month}/${tripData.tripStart.year} ${tripData.tripStart.hour}:${tripData.tripStart.minute.toString().padLeft(2, '0')}',
+              Icons.calendar_today,
+              Colors.grey,
+            ),
           ]),
           const SizedBox(height: 16),
           // Fuel tip card
@@ -120,13 +176,22 @@ class TripScreen extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('Fuel Saving Tip', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green.shade700)),
+                      Text(
+                        'Fuel Saving Tip',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.green.shade700,
+                        ),
+                      ),
                       const SizedBox(height: 4),
                       Text(
                         tripData.avgFuelL100km > 10
                             ? 'Try smooth acceleration and maintaining 80-100 km/h on highways to improve fuel economy.'
                             : 'Great fuel economy! Keep maintaining smooth driving habits.',
-                        style: TextStyle(fontSize: 12, color: Colors.green.shade800),
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.green.shade800,
+                        ),
                       ),
                     ],
                   ),
@@ -141,7 +206,11 @@ class TripScreen extends StatelessWidget {
 
   Widget _buildEconomyHero(BuildContext context) {
     final economy = tripData.avgFuelL100km;
-    final color = economy > 12 ? Colors.red : economy > 8 ? Colors.orange : Colors.green;
+    final color = economy > 12
+        ? Colors.red
+        : economy > 8
+        ? Colors.orange
+        : Colors.green;
 
     return Container(
       padding: const EdgeInsets.all(24),
@@ -152,19 +221,34 @@ class TripScreen extends StatelessWidget {
           end: Alignment.bottomRight,
         ),
         borderRadius: BorderRadius.circular(20),
-        boxShadow: [BoxShadow(color: color.withOpacity(0.3), blurRadius: 16, offset: const Offset(0, 6))],
+        boxShadow: [
+          BoxShadow(
+            color: color.withOpacity(0.3),
+            blurRadius: 16,
+            offset: const Offset(0, 6),
+          ),
+        ],
       ),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceAround,
         children: [
-          _heroStat('${tripData.distanceKm.toStringAsFixed(1)}', 'km', 'Distance'),
+          _heroStat(
+            '${tripData.distanceKm.toStringAsFixed(1)}',
+            'km',
+            'Distance',
+          ),
           Container(width: 1, height: 60, color: Colors.white.withOpacity(0.3)),
           _heroStat(
-              economy > 0 ? '${economy.toStringAsFixed(1)}' : '--',
-              'L/100km',
-              'Avg Economy'),
+            economy > 0 ? '${economy.toStringAsFixed(1)}' : '--',
+            'L/100km',
+            'Avg Economy',
+          ),
           Container(width: 1, height: 60, color: Colors.white.withOpacity(0.3)),
-          _heroStat('${tripData.fuelConsumedL.toStringAsFixed(1)}', 'L used', 'Fuel'),
+          _heroStat(
+            '${tripData.fuelConsumedL.toStringAsFixed(1)}',
+            'L used',
+            'Fuel',
+          ),
         ],
       ),
     );
@@ -173,10 +257,27 @@ class TripScreen extends StatelessWidget {
   Widget _heroStat(String value, String unit, String label) {
     return Column(
       children: [
-        Text(value, style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.bold)),
-        Text(unit, style: TextStyle(color: Colors.white.withOpacity(0.8), fontSize: 12)),
+        Text(
+          value,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 28,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        Text(
+          unit,
+          style: TextStyle(color: Colors.white.withOpacity(0.8), fontSize: 12),
+        ),
         const SizedBox(height: 4),
-        Text(label, style: TextStyle(color: Colors.white.withOpacity(0.7), fontSize: 10, letterSpacing: 1)),
+        Text(
+          label,
+          style: TextStyle(
+            color: Colors.white.withOpacity(0.7),
+            fontSize: 10,
+            letterSpacing: 1,
+          ),
+        ),
       ],
     );
   }
@@ -186,14 +287,23 @@ class TripScreen extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
-        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 8, offset: const Offset(0, 2))],
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(title, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+            Text(
+              title,
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+            ),
             const SizedBox(height: 12),
             ...children,
           ],
@@ -209,13 +319,22 @@ class TripScreen extends StatelessWidget {
         children: [
           Container(
             padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(color: color.withOpacity(0.12), borderRadius: BorderRadius.circular(8)),
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.12),
+              borderRadius: BorderRadius.circular(8),
+            ),
             child: Icon(icon, color: color, size: 18),
           ),
           const SizedBox(width: 12),
-          Text(label, style: TextStyle(fontSize: 13, color: Colors.grey.shade700)),
+          Text(
+            label,
+            style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
+          ),
           const Spacer(),
-          Text(value, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+          Text(
+            value,
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+          ),
         ],
       ),
     );

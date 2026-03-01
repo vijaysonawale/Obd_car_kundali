@@ -27,18 +27,25 @@ class HealthScreen extends StatelessWidget {
 
     // Coolant
     final coolant = liveValues['0105'] ?? 80;
-    if (coolant > 108) s -= 25;
-    else if (coolant > 100) s -= 12;
-    else if (coolant < 60 && coolant > 0) s -= 5; // running cold
+    if (coolant > 108)
+      s -= 25;
+    else if (coolant > 100)
+      s -= 12;
+    else if (coolant < 60 && coolant > 0)
+      s -= 5; // running cold
 
     // Fuel trims
     final stft = (liveValues['0106'] ?? 0).abs();
     final ltft = (liveValues['0107'] ?? 0).abs();
-    if (stft > 20 || ltft > 15) s -= 12;
-    else if (stft > 12 || ltft > 10) s -= 6;
+    if (stft > 20 || ltft > 15)
+      s -= 12;
+    else if (stft > 12 || ltft > 10)
+      s -= 6;
 
     // Readiness monitors not complete
-    final notReady = readinessMonitors.where((m) => m.isSupported && !m.isComplete).length;
+    final notReady = readinessMonitors
+        .where((m) => m.isSupported && !m.isComplete)
+        .length;
     s -= notReady * 3;
 
     return s.clamp(0, 100);
@@ -74,7 +81,7 @@ class HealthScreen extends StatelessWidget {
       backgroundColor: Colors.grey.shade100,
       appBar: AppBar(
         title: const Text('Vehicle Health'),
-        backgroundColor: Colors.blue.shade800,
+        backgroundColor: Colors.black87,
         foregroundColor: Colors.white,
       ),
       body: ListView(
@@ -100,10 +107,17 @@ class HealthScreen extends StatelessWidget {
       decoration: BoxDecoration(
         gradient: LinearGradient(
           colors: [_scoreColor.withOpacity(0.85), _scoreColor.withOpacity(0.6)],
-          begin: Alignment.topLeft, end: Alignment.bottomRight,
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
         ),
         borderRadius: BorderRadius.circular(24),
-        boxShadow: [BoxShadow(color: _scoreColor.withOpacity(0.4), blurRadius: 20, offset: const Offset(0, 8))],
+        boxShadow: [
+          BoxShadow(
+            color: _scoreColor.withOpacity(0.4),
+            blurRadius: 20,
+            offset: const Offset(0, 8),
+          ),
+        ],
       ),
       child: Row(
         children: [
@@ -111,16 +125,29 @@ class HealthScreen extends StatelessWidget {
             height: 110,
             width: 110,
             child: CustomPaint(
-              painter: _ScoreRingPainter(score: _score / 100, color: Colors.white),
+              painter: _ScoreRingPainter(
+                score: _score / 100,
+                color: Colors.white,
+              ),
               child: Center(
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Text(
                       '$_score',
-                      style: const TextStyle(color: Colors.white, fontSize: 36, fontWeight: FontWeight.bold),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 36,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
-                    Text('/100', style: TextStyle(color: Colors.white.withOpacity(0.7), fontSize: 11)),
+                    Text(
+                      '/100',
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.7),
+                        fontSize: 11,
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -131,14 +158,24 @@ class HealthScreen extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('$_scoreEmoji $_scoreLabel',
-                    style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
+                Text(
+                  '$_scoreEmoji $_scoreLabel',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 22,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
                 const SizedBox(height: 8),
                 Text(
                   dtcList.isEmpty
                       ? 'No fault codes detected.\nAll systems nominal.'
                       : '${dtcList.length} fault code(s) detected.\nAttention required.',
-                  style: TextStyle(color: Colors.white.withOpacity(0.85), fontSize: 13, height: 1.5),
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.85),
+                    fontSize: 13,
+                    height: 1.5,
+                  ),
                 ),
               ],
             ),
@@ -153,7 +190,9 @@ class HealthScreen extends StatelessWidget {
       _CheckItem(
         label: 'Fault Codes',
         ok: dtcList.isEmpty,
-        detail: dtcList.isEmpty ? 'None detected' : '${dtcList.length} code(s) found',
+        detail: dtcList.isEmpty
+            ? 'None detected'
+            : '${dtcList.length} code(s) found',
         icon: Icons.error_outline,
       ),
       _CheckItem(
@@ -164,8 +203,11 @@ class HealthScreen extends StatelessWidget {
       ),
       _CheckItem(
         label: 'Fuel Trims',
-        ok: (liveValues['0106'] ?? 0).abs() <= 10 && (liveValues['0107'] ?? 0).abs() <= 10,
-        detail: 'STFT ${(liveValues['0106'] ?? 0).toStringAsFixed(1)}% / LTFT ${(liveValues['0107'] ?? 0).toStringAsFixed(1)}%',
+        ok:
+            (liveValues['0106'] ?? 0).abs() <= 10 &&
+            (liveValues['0107'] ?? 0).abs() <= 10,
+        detail:
+            'STFT ${(liveValues['0106'] ?? 0).toStringAsFixed(1)}% / LTFT ${(liveValues['0107'] ?? 0).toStringAsFixed(1)}%',
         icon: Icons.local_gas_station,
       ),
       _CheckItem(
@@ -191,23 +233,41 @@ class HealthScreen extends StatelessWidget {
       decoration: BoxDecoration(
         color: item.ok ? Colors.green.shade50 : Colors.red.shade50,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: item.ok ? Colors.green.shade200 : Colors.red.shade200),
+        border: Border.all(
+          color: item.ok ? Colors.green.shade200 : Colors.red.shade200,
+        ),
       ),
       child: Row(
         children: [
-          Icon(item.icon, color: item.ok ? Colors.green.shade600 : Colors.red.shade600, size: 22),
+          Icon(
+            item.icon,
+            color: item.ok ? Colors.green.shade600 : Colors.red.shade600,
+            size: 22,
+          ),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(item.label, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
-                Text(item.detail, style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+                Text(
+                  item.label,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                  ),
+                ),
+                Text(
+                  item.detail,
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                ),
               ],
             ),
           ),
-          Icon(item.ok ? Icons.check_circle : Icons.warning_rounded,
-              color: item.ok ? Colors.green : Colors.red, size: 22),
+          Icon(
+            item.ok ? Icons.check_circle : Icons.warning_rounded,
+            color: item.ok ? Colors.green : Colors.red,
+            size: 22,
+          ),
         ],
       ),
     );
@@ -217,34 +277,74 @@ class HealthScreen extends StatelessWidget {
     return _card(
       '⚠️ Fault Codes',
       dtcList.isEmpty
-          ? Row(children: [
-              Icon(Icons.check_circle, color: Colors.green, size: 20),
-              const SizedBox(width: 8),
-              const Text('No fault codes stored', style: TextStyle(color: Colors.green, fontWeight: FontWeight.w500)),
-            ])
+          ? Row(
+              children: [
+                Icon(Icons.check_circle, color: Colors.green, size: 20),
+                const SizedBox(width: 8),
+                const Text(
+                  'No fault codes stored',
+                  style: TextStyle(
+                    color: Colors.green,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            )
           : Column(
               children: dtcList.map((dtc) {
                 return Container(
                   margin: const EdgeInsets.only(bottom: 8),
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: dtc.status == 'Confirmed' ? Colors.red.shade50 : Colors.orange.shade50,
+                    color: dtc.status == 'Confirmed'
+                        ? Colors.red.shade50
+                        : Colors.orange.shade50,
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: Row(
                     children: [
-                      Icon(Icons.error, color: dtc.status == 'Confirmed' ? Colors.red : Colors.orange, size: 20),
+                      Icon(
+                        Icons.error,
+                        color: dtc.status == 'Confirmed'
+                            ? Colors.red
+                            : Colors.orange,
+                        size: 20,
+                      ),
                       const SizedBox(width: 8),
-                      Text(dtc.code, style: const TextStyle(fontWeight: FontWeight.bold, fontFamily: 'monospace')),
+                      Text(
+                        dtc.code,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontFamily: 'monospace',
+                        ),
+                      ),
                       const SizedBox(width: 8),
-                      Expanded(child: Text(dtc.description, style: const TextStyle(fontSize: 12), overflow: TextOverflow.ellipsis)),
+                      Expanded(
+                        child: Text(
+                          dtc.description,
+                          style: const TextStyle(fontSize: 12),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
                         decoration: BoxDecoration(
-                          color: dtc.status == 'Confirmed' ? Colors.red : Colors.orange,
+                          color: dtc.status == 'Confirmed'
+                              ? Colors.red
+                              : Colors.orange,
                           borderRadius: BorderRadius.circular(4),
                         ),
-                        child: Text(dtc.status, style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold)),
+                        child: Text(
+                          dtc.status,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 9,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                       ),
                     ],
                   ),
@@ -260,16 +360,56 @@ class HealthScreen extends StatelessWidget {
     final ltft = liveValues['0107'] ?? 0;
     final battery = liveValues['0142'] ?? 0;
 
-    return _card('📊 Sensor Status', Column(children: [
-      _sensorBar('Coolant Temp', coolant, 0, 120, '${coolant.toStringAsFixed(0)}°C', coolant > 100 ? Colors.red : Colors.blue),
-      _sensorBar('STFT B1', stft + 25, -25, 50, '${stft >= 0 ? '+' : ''}${stft.toStringAsFixed(1)}%', stft.abs() > 10 ? Colors.red : Colors.green),
-      _sensorBar('LTFT B1', ltft + 25, -25, 50, '${ltft >= 0 ? '+' : ''}${ltft.toStringAsFixed(1)}%', ltft.abs() > 10 ? Colors.red : Colors.green),
-      if (battery > 0)
-        _sensorBar('Battery', battery, 10, 16, '${battery.toStringAsFixed(1)}V', battery < 12 ? Colors.red : Colors.green),
-    ]));
+    return _card(
+      '📊 Sensor Status',
+      Column(
+        children: [
+          _sensorBar(
+            'Coolant Temp',
+            coolant,
+            0,
+            120,
+            '${coolant.toStringAsFixed(0)}°C',
+            coolant > 100 ? Colors.red : Colors.blue,
+          ),
+          _sensorBar(
+            'STFT B1',
+            stft + 25,
+            -25,
+            50,
+            '${stft >= 0 ? '+' : ''}${stft.toStringAsFixed(1)}%',
+            stft.abs() > 10 ? Colors.red : Colors.green,
+          ),
+          _sensorBar(
+            'LTFT B1',
+            ltft + 25,
+            -25,
+            50,
+            '${ltft >= 0 ? '+' : ''}${ltft.toStringAsFixed(1)}%',
+            ltft.abs() > 10 ? Colors.red : Colors.green,
+          ),
+          if (battery > 0)
+            _sensorBar(
+              'Battery',
+              battery,
+              10,
+              16,
+              '${battery.toStringAsFixed(1)}V',
+              battery < 12 ? Colors.red : Colors.green,
+            ),
+        ],
+      ),
+    );
   }
 
-  Widget _sensorBar(String label, double value, double min, double max, String display, Color color) {
+  Widget _sensorBar(
+    String label,
+    double value,
+    double min,
+    double max,
+    String display,
+    Color color,
+  ) {
     final progress = ((value - min) / (max - min)).clamp(0.0, 1.0);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
@@ -279,8 +419,18 @@ class HealthScreen extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(label, style: TextStyle(fontSize: 13, color: Colors.grey.shade700)),
-              Text(display, style: TextStyle(fontWeight: FontWeight.bold, color: color, fontSize: 13)),
+              Text(
+                label,
+                style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
+              ),
+              Text(
+                display,
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: color,
+                  fontSize: 13,
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 4),
@@ -300,33 +450,59 @@ class HealthScreen extends StatelessWidget {
 
   Widget _buildReadinessSection() {
     if (readinessMonitors.isEmpty) return const SizedBox.shrink();
-    return _card('🔧 Readiness Monitors', Column(
-      children: readinessMonitors.map((m) {
-        return Padding(
-          padding: const EdgeInsets.symmetric(vertical: 5),
-          child: Row(
-            children: [
-              Icon(m.isComplete ? Icons.check_circle : Icons.pending,
-                  color: m.isComplete ? Colors.green : m.isSupported ? Colors.orange : Colors.grey,
-                  size: 18),
-              const SizedBox(width: 10),
-              Expanded(child: Text(m.name, style: const TextStyle(fontSize: 14))),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: m.isComplete ? Colors.green.shade600 : m.isSupported ? Colors.orange : Colors.grey,
-                  borderRadius: BorderRadius.circular(6),
+    return _card(
+      '🔧 Readiness Monitors',
+      Column(
+        children: readinessMonitors.map((m) {
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 5),
+            child: Row(
+              children: [
+                Icon(
+                  m.isComplete ? Icons.check_circle : Icons.pending,
+                  color: m.isComplete
+                      ? Colors.green
+                      : m.isSupported
+                      ? Colors.orange
+                      : Colors.grey,
+                  size: 18,
                 ),
-                child: Text(
-                  m.isComplete ? 'Ready' : m.isSupported ? 'Not Ready' : 'N/A',
-                  style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(m.name, style: const TextStyle(fontSize: 14)),
                 ),
-              ),
-            ],
-          ),
-        );
-      }).toList(),
-    ));
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
+                  decoration: BoxDecoration(
+                    color: m.isComplete
+                        ? Colors.green.shade600
+                        : m.isSupported
+                        ? Colors.orange
+                        : Colors.grey,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    m.isComplete
+                        ? 'Ready'
+                        : m.isSupported
+                        ? 'Not Ready'
+                        : 'N/A',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }).toList(),
+      ),
+    );
   }
 
   Widget _card(String title, Widget child) {
@@ -335,12 +511,21 @@ class HealthScreen extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
-        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 8, offset: const Offset(0, 2))],
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+          Text(
+            title,
+            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+          ),
           const SizedBox(height: 12),
           child,
         ],
@@ -353,7 +538,12 @@ class _CheckItem {
   final String label, detail;
   final bool ok;
   final IconData icon;
-  _CheckItem({required this.label, required this.ok, required this.detail, required this.icon});
+  _CheckItem({
+    required this.label,
+    required this.ok,
+    required this.detail,
+    required this.icon,
+  });
 }
 
 class _ScoreRingPainter extends CustomPainter {
@@ -366,13 +556,25 @@ class _ScoreRingPainter extends CustomPainter {
     final center = Offset(size.width / 2, size.height / 2);
     final radius = size.width / 2 - 8;
 
-    canvas.drawCircle(center, radius,
-        Paint()..color = color.withOpacity(0.2)..style = PaintingStyle.stroke..strokeWidth = 10);
+    canvas.drawCircle(
+      center,
+      radius,
+      Paint()
+        ..color = color.withOpacity(0.2)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 10,
+    );
 
     canvas.drawArc(
       Rect.fromCircle(center: center, radius: radius),
-      -math.pi / 2, math.pi * 2 * score, false,
-      Paint()..color = color..style = PaintingStyle.stroke..strokeWidth = 10..strokeCap = StrokeCap.round,
+      -math.pi / 2,
+      math.pi * 2 * score,
+      false,
+      Paint()
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 10
+        ..strokeCap = StrokeCap.round,
     );
   }
 
