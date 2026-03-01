@@ -1,7 +1,11 @@
+// lib/main.dart
 import 'package:flutter/material.dart';
+import 'services/ad_manager.dart';
 import 'screens/home_screen.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await AdManager.instance.initialize(); // ← init AdMob before runApp
   runApp(const MyApp());
 }
 
@@ -12,7 +16,10 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Car Kundali',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(primarySwatch: Colors.blue),
+      theme: ThemeData(
+        primarySwatch: Colors.blue,
+        useMaterial3: true,
+      ),
       home: const HomeScreen(),
     );
   }

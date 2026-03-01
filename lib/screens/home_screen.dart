@@ -9,6 +9,8 @@ import 'package:share_plus/share_plus.dart';
 import 'package:fl_chart/fl_chart.dart';
 import '../services/gatt_obd_service.dart';
 import '../services/data_logger.dart';
+import '../services/ad_manager.dart';
+import '../widgets/ad_widgets.dart';
 import '../models/obd_pid.dart';
 import '../models/vehicle_data.dart';
 import '../models/dtc_model.dart';
@@ -35,6 +37,11 @@ class _HomeScreenState extends State<HomeScreen>
   BluetoothDevice? connected;
   StreamSubscription? _scanSub, _adapterSub, _obdDataSub;
   bool _isScanning = false, _isConnecting = false, _isLogging = false;
+
+  // ─── AD TRACKING ──────────────────────────────────────
+  int _dtcScanCount = 0;        // show interstitial every 3 DTC scans
+  bool _dashboardUnlocked = false;  // rewarded ad gate
+  bool _performanceUnlocked = false;
 
   // Live Data
   final Map<String, List<VehicleData>> _liveDataHistory = {};
@@ -300,6 +307,41 @@ class _HomeScreenState extends State<HomeScreen>
     tripStart: _tripStart ?? DateTime.now(),
   );
 
+  // ─── AD-GATED NAVIGATION ──────────────────────────────
+  void _openDashboard() {
+    if (_dashboardUnlocked) {
+      Navigator.push(context, MaterialPageRoute(builder: (_) => DashboardScreen(valuesNotifier: _valuesNotifier)));
+      return;
+    }
+    AdGateDialog.show(
+      context,
+      featureName: "🎛 Live Gauge Dashboard",
+      featureDescription: "Watch a short ad to unlock the full real-time gauge dashboard with RPM, Speed and 9 sensor tiles.",
+      featureIcon: Icons.speed,
+      onUnlocked: () {
+        setState(() => _dashboardUnlocked = true);
+        Navigator.push(context, MaterialPageRoute(builder: (_) => DashboardScreen(valuesNotifier: _valuesNotifier)));
+      },
+    );
+  }
+
+  void _openPerformance() {
+    if (_performanceUnlocked) {
+      Navigator.push(context, MaterialPageRoute(builder: (_) => PerformanceScreen(valuesNotifier: _valuesNotifier)));
+      return;
+    }
+    AdGateDialog.show(
+      context,
+      featureName: "⚡ 0-100 Performance Test",
+      featureDescription: "Watch a short ad to unlock the 0-60 / 0-80 / 0-100 km\/h acceleration timer.",
+      featureIcon: Icons.timer,
+      onUnlocked: () {
+        setState(() => _performanceUnlocked = true);
+        Navigator.push(context, MaterialPageRoute(builder: (_) => PerformanceScreen(valuesNotifier: _valuesNotifier)));
+      },
+    );
+  }
+
   void _resetTrip() {
     setState(() {
       _tripDistanceKm = 0; _tripMaxSpeed = 0;
@@ -407,6 +449,9 @@ class _HomeScreenState extends State<HomeScreen>
     setState(() => _dtcList = dtcs);
     appendLog('Found ${dtcs.length} DTC(s)');
     if (dtcs.isNotEmpty && mounted) _showDtcDialog(dtcs);
+    // ── show interstitial every 3 scans ──
+    _dtcScanCount++;
+    if (_dtcScanCount % 3 == 0) AdManager.instance.showInterstitial();
     else if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('✅ No trouble codes!'), backgroundColor: Colors.green));
   }
 
@@ -570,10 +615,12 @@ class _HomeScreenState extends State<HomeScreen>
       body: Column(
         children: [
           if (connected != null) _buildConnectionBanner(),
+          const BannerAdWidget(), // ← banner ad always visible at top
           if (connected != null) _buildCompactMetrics(),
           if (connected != null) _buildFeatureGrid(),
           if (connected != null) _buildActionButtons(),
           if (connected == null) _buildScanButton(),
+          if (connected == null) const NativeAdWidget(), // ← native ad when idle
           Expanded(
             child: Column(
               children: [
@@ -677,13 +724,13 @@ class _HomeScreenState extends State<HomeScreen>
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
       child: Row(
         children: [
-          Expanded(child: _featureCard('🎛 Dashboard', 'Live Gauges', Colors.blue, () => Navigator.push(context, MaterialPageRoute(builder: (_) => DashboardScreen(valuesNotifier: _valuesNotifier))))),
+          Expanded(child: _featureCard('🎛 Dashboard', 'Live Gauges', Colors.blue, _openDashboard)),
           const SizedBox(width: 10),
           Expanded(child: _featureCard('❤️ Health', '${_dtcList.isEmpty ? "All OK" : "${_dtcList.length} codes"}', Colors.green, () => Navigator.push(context, MaterialPageRoute(builder: (_) => HealthScreen(dtcList: _dtcList, liveValues: _currentValues, readinessMonitors: _readinessMonitors))))),
           const SizedBox(width: 10),
           Expanded(child: _featureCard('🗺 Trip', '${_tripDistanceKm.toStringAsFixed(1)} km', Colors.orange, () => Navigator.push(context, MaterialPageRoute(builder: (_) => TripScreen(tripData: _tripData))))),
           const SizedBox(width: 10),
-          Expanded(child: _featureCard('⚡ Perf', '0-100', Colors.red, () => Navigator.push(context, MaterialPageRoute(builder: (_) => PerformanceScreen(valuesNotifier: _valuesNotifier))))),
+          Expanded(child: _featureCard('⚡ Perf', '0-100', Colors.red, _openPerformance)),
         ],
       ),
     );

@@ -4,6 +4,7 @@
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <uses-permission android:name="android.permission.INTERNET"/>
     
     <!-- Bluetooth permissions for older Android versions -->
     <uses-permission android:name="android.permission.BLUETOOTH" 
@@ -24,6 +25,12 @@
         android:label="Car Kundali"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
+        <!--  ADMOB APP ID — replace with YOUR app id from admob.google.com  -->
+        <meta-data
+        android:name="com.google.android.gms.ads.APPLICATION_ID"
+        android:value="ca-app-pub-3940256099942544~3347511713"/>
+        <!--  For testing use:  ca-app-pub-3940256099942544~3347511713  -->
+        <!--  For production:   ca-app-pub-XXXXXXXXXXXXXXXX~XXXXXXXXXX  -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
