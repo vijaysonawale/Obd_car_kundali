@@ -32,54 +32,50 @@ class _HomeScreenState extends State<HomeScreen>
   final GattObdService _obd = GattObdService();
   final DataLogger _dataLogger = DataLogger();
 
-  // BLE
+  // ─── BLE ──────────────────────────────────────────────
   List<ScanResult> scanResults = [];
   BluetoothDevice? connected;
   StreamSubscription? _scanSub, _adapterSub, _obdDataSub;
   bool _isScanning = false, _isConnecting = false, _isLogging = false;
 
   // ─── AD TRACKING ──────────────────────────────────────
-  int _dtcScanCount = 0;        // show interstitial every 3 DTC scans
-  bool _dashboardUnlocked = false;  // rewarded ad gate
-  bool _performanceUnlocked = false;
+  // AdMob policy: don't show interstitial on EVERY tap.
+  // 60s cooldown keeps revenue high without risking ban.
+  DateTime? _lastInterstitialTime;
+  static const _adCooldown = Duration(seconds: 60);
+  int _tapCount = 0;
 
-  // Live Data
+  // ─── LIVE DATA ────────────────────────────────────────
   final Map<String, List<VehicleData>> _liveDataHistory = {};
   final Map<String, double> _currentValues = {};
-  final ValueNotifier<Map<String, double>> _valuesNotifier =
-      ValueNotifier({});
+  final ValueNotifier<Map<String, double>> _valuesNotifier = ValueNotifier({});
 
-  // Readiness / DTC / Vehicle info
-  List<ReadinessMonitor> _readinessMonitors = [];
+  // ─── VEHICLE STATE ────────────────────────────────────
+  List<ReadinessMonitor> _readinessMonitors = _defaultReadiness();
   List<DtcModel> _dtcList = [];
   VehicleInfo? _vehicleInfo;
 
-  // Logs
+  // ─── LOGS ─────────────────────────────────────────────
   String logText = '';
   final List<String> fullLogs = [];
 
-  // UI
+  // ─── UI ───────────────────────────────────────────────
   late final TabController _tabs;
   Timer? _autoRefreshTimer;
   final TextEditingController _commandController = TextEditingController();
   String _commandResponse = '';
 
-  // Monitored PIDs
   final List<String> _monitoredPids = [
     '010C', '010D', '0104', '0105', '010F', '0110',
     '0111', '010B', '0106', '0107', '010E', '012F',
     '0114', '0142',
   ];
 
-  // ─── TRIP TRACKING ────────────────────────────────────
+  // ─── TRIP ─────────────────────────────────────────────
   DateTime? _tripStart;
-  double _tripDistanceKm = 0;
-  double _tripMaxSpeed = 0;
-  double _tripSpeedSum = 0;
+  double _tripDistanceKm = 0, _tripMaxSpeed = 0, _tripSpeedSum = 0;
   int _tripSpeedSamples = 0;
-  double _tripFuelL = 0;
-  double _tripMaxCoolant = 0;
-  double _tripRpmSum = 0;
+  double _tripFuelL = 0, _tripMaxCoolant = 0, _tripRpmSum = 0;
   int _tripRpmSamples = 0;
   DateTime? _lastTripTime;
   double _currentFuelL100km = 0;
@@ -87,16 +83,29 @@ class _HomeScreenState extends State<HomeScreen>
   // ─── ALERTS ───────────────────────────────────────────
   final Set<String> _alertsSent = {};
 
-  // ─── LIFECYCLE ────────────────────────────────────────
+  static List<ReadinessMonitor> _defaultReadiness() => [
+    ReadinessMonitor(name: 'Misfire',     isSupported: true, isComplete: false),
+    ReadinessMonitor(name: 'Fuel System', isSupported: true, isComplete: false),
+    ReadinessMonitor(name: 'Components',  isSupported: true, isComplete: false),
+    ReadinessMonitor(name: 'Catalyst',    isSupported: true, isComplete: false),
+    ReadinessMonitor(name: 'Evaporative', isSupported: true, isComplete: false),
+    ReadinessMonitor(name: 'O2 Sensor',   isSupported: true, isComplete: false),
+    ReadinessMonitor(name: 'O2 Heater',   isSupported: true, isComplete: false),
+    ReadinessMonitor(name: 'EGR',         isSupported: true, isComplete: false),
+  ];
+
+  double _val(String pid) => _currentValues[pid] ?? 0.0;
+
+  // ══════════════════════════════════════════════════════
+  // LIFECYCLE
+  // ══════════════════════════════════════════════════════
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _tabs = TabController(length: 5, vsync: this);
     _initializeBluetooth();
-    _logLocal('═══════════════════════════');
-    _logLocal('CAR KUNDALI PRO — Started');
-    _logLocal('═══════════════════════════');
+    _logLocal('Car Kundali Pro started');
   }
 
   @override
@@ -105,8 +114,7 @@ class _HomeScreenState extends State<HomeScreen>
     _scanSub?.cancel(); _adapterSub?.cancel(); _obdDataSub?.cancel();
     _autoRefreshTimer?.cancel();
     _tabs.dispose(); _commandController.dispose();
-    _valuesNotifier.dispose();
-    _obd.dispose();
+    _valuesNotifier.dispose(); _obd.dispose();
     super.dispose();
   }
 
@@ -115,44 +123,60 @@ class _HomeScreenState extends State<HomeScreen>
     if (state == AppLifecycleState.resumed) _checkBluetoothState();
   }
 
-  // ─── BLUETOOTH INIT ────────────────────────────────────
+  // ══════════════════════════════════════════════════════
+  // AD HELPER — call on every meaningful user action
+  // ══════════════════════════════════════════════════════
+  void _maybeShowInterstitial() {
+    _tapCount++;
+    final now = DateTime.now();
+    final last = _lastInterstitialTime;
+    // Show every 2nd tap AND only if cooldown passed
+    if (_tapCount % 2 == 0 &&
+        (last == null || now.difference(last) >= _adCooldown)) {
+      AdManager.instance.showInterstitial();
+      _lastInterstitialTime = now;
+    }
+  }
+
+  void _navigate(Widget screen) {
+    _maybeShowInterstitial();
+    Navigator.push(context, MaterialPageRoute(builder: (_) => screen));
+  }
+
+  // ══════════════════════════════════════════════════════
+  // BLUETOOTH
+  // ══════════════════════════════════════════════════════
   Future<void> _initializeBluetooth() async {
     await _checkBluetoothState();
-    _adapterSub = FlutterBluePlus.adapterState.listen((s) {
-      appendLog('📶 Bluetooth: ${s.name}');
-    });
+    _adapterSub = FlutterBluePlus.adapterState.listen((s) => appendLog('📶 BT: ${s.name}'));
   }
 
   Future<void> _checkBluetoothState() async {
     try {
-      if (!await FlutterBluePlus.isSupported) { appendLog('❌ BT not supported'); return; }
+      if (!await FlutterBluePlus.isSupported) return;
       final state = await FlutterBluePlus.adapterState.first;
-      if (state != BluetoothAdapterState.on) {
-        appendLog('⚠️ Bluetooth OFF');
-        if (Platform.isAndroid) { try { await FlutterBluePlus.turnOn(); } catch (_) {} }
-      } else { appendLog('✅ Bluetooth ON'); }
-    } catch (e) { appendLog('BT error: $e'); }
+      if (state != BluetoothAdapterState.on && Platform.isAndroid) {
+        try { await FlutterBluePlus.turnOn(); } catch (_) {}
+      }
+    } catch (_) {}
   }
 
   Future<bool> _requestPermissions() async {
-    try {
-      if (Platform.isAndroid) {
-        final s = await Permission.bluetoothScan.request();
-        final c = await Permission.bluetoothConnect.request();
-        final l = await Permission.location.request();
-        return s.isGranted && c.isGranted && l.isGranted;
-      }
-      return true;
-    } catch (_) { return false; }
+    if (!Platform.isAndroid) return true;
+    final s = await Permission.bluetoothScan.request();
+    final c = await Permission.bluetoothConnect.request();
+    final l = await Permission.location.request();
+    return s.isGranted && c.isGranted && l.isGranted;
   }
 
-  // ─── SCAN & CONNECT ────────────────────────────────────
+  // ══════════════════════════════════════════════════════
+  // SCAN & CONNECT
+  // ══════════════════════════════════════════════════════
   Future<void> startScan() async {
     if (_isScanning) return;
     if (!await _requestPermissions()) return;
     setState(() { scanResults.clear(); _isScanning = true; });
     appendLog('🔍 Scanning...');
-
     _scanSub?.cancel();
     _scanSub = FlutterBluePlus.scanResults.listen((results) {
       final ids = scanResults.map((e) => e.device.remoteId.str).toSet();
@@ -160,15 +184,18 @@ class _HomeScreenState extends State<HomeScreen>
         if (!ids.contains(r.device.remoteId.str)) setState(() => scanResults.add(r));
       }
     });
-
-    await FlutterBluePlus.startScan(timeout: const Duration(seconds: 12), androidUsesFineLocation: true, androidScanMode: AndroidScanMode.lowLatency);
+    await FlutterBluePlus.startScan(
+      timeout: const Duration(seconds: 12),
+      androidUsesFineLocation: true,
+      androidScanMode: AndroidScanMode.lowLatency,
+    );
     await Future.delayed(const Duration(seconds: 12));
     try { await FlutterBluePlus.stopScan(); } catch (_) {}
     setState(() => _isScanning = false);
-    appendLog('✅ Found ${scanResults.length} devices');
+    appendLog('✅ Found ${scanResults.length} device(s)');
   }
 
-  String _getDeviceName(ScanResult r) {
+  String _deviceName(ScanResult r) {
     if (r.advertisementData.advName.isNotEmpty) return r.advertisementData.advName;
     if (r.device.platformName.isNotEmpty) return r.device.platformName;
     return 'Unknown Device';
@@ -177,24 +204,25 @@ class _HomeScreenState extends State<HomeScreen>
   Future<void> connectDevice(BluetoothDevice device) async {
     if (_isConnecting) return;
     setState(() => _isConnecting = true);
-    final name = _getDeviceName(scanResults.firstWhere((r) => r.device.remoteId == device.remoteId));
+    final name = _deviceName(scanResults.firstWhere((r) => r.device.remoteId == device.remoteId));
     appendLog('🔗 Connecting to $name...');
     try {
       await device.connect(timeout: const Duration(seconds: 15));
       appendLog('✅ BT connected');
-      final ok = await _obd.connect(device);
-      if (!ok) { appendLog('❌ OBD failed'); await device.disconnect(); setState(() => _isConnecting = false); return; }
+      if (!await _obd.connect(device)) {
+        appendLog('❌ OBD failed'); await device.disconnect(); return;
+      }
       appendLog('✅ OBD connected');
       await _initELM327();
       _obdDataSub?.cancel();
       _obdDataSub = _obd.dataStream.listen((d) { if (d.trim().isNotEmpty) _processObdResponse(d); });
       setState(() => connected = device);
-      appendLog('✅ Ready!');
+      appendLog('✅ Live!');
       _startAutoRefresh();
       _getVehicleInfo().catchError((_) {});
       _getReadinessMonitors().catchError((_) {});
     } catch (e) {
-      appendLog('❌ Error: $e');
+      appendLog('❌ $e');
       try { await device.disconnect(); } catch (_) {}
     } finally {
       setState(() => _isConnecting = false);
@@ -202,7 +230,7 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   Future<void> _initELM327() async {
-    appendLog('Initializing ELM327...');
+    appendLog('Init ELM327...');
     for (final cmd in ['ATZ', 'ATE0', 'ATL0', 'ATH0', 'ATSP0']) {
       try {
         await _obd.sendCommand(cmd);
@@ -215,15 +243,14 @@ class _HomeScreenState extends State<HomeScreen>
 
   void _startAutoRefresh() {
     _autoRefreshTimer?.cancel();
-    _autoRefreshTimer = Timer.periodic(const Duration(seconds: 1), (t) {
-      if (connected != null && mounted) _refreshMonitoredPids();
-    });
-    // Start trip when logging begins — but also track silently
     _tripStart = DateTime.now();
     _lastTripTime = DateTime.now();
+    _autoRefreshTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (connected != null && mounted) _refreshPids();
+    });
   }
 
-  Future<void> _refreshMonitoredPids() async {
+  Future<void> _refreshPids() async {
     if (_isConnecting) return;
     for (final pid in _monitoredPids) {
       try {
@@ -233,65 +260,62 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
-  // ─── DATA PROCESSING ──────────────────────────────────
+  // ══════════════════════════════════════════════════════
+  // DATA PROCESSING
+  // ══════════════════════════════════════════════════════
   void _processObdResponse(String raw) {
     final cleaned = _cleanHex(raw);
     for (final entry in ObdPidDatabase.pids.entries) {
       final pid = entry.value;
-      if (cleaned.contains('41 ${pid.pid}')) {
-        final parts = cleaned.split(' ');
-        final idx = parts.indexOf('41');
-        if (idx >= 0 && parts.length >= idx + 2 + pid.bytes) {
-          try {
-            final bytes = List.generate(pid.bytes, (i) => int.parse(parts[idx + 2 + i], radix: 16));
-            final value = pid.formula(bytes) as double;
-            final vd = VehicleData(pidCode: entry.key, value: value, unit: pid.unit, timestamp: DateTime.now());
-            setState(() {
-              _currentValues[entry.key] = value;
-              _liveDataHistory.putIfAbsent(entry.key, () => []).add(vd);
-              if (_liveDataHistory[entry.key]!.length > 120) _liveDataHistory[entry.key]!.removeAt(0);
-            });
-            // Update notifier for real-time screens
-            _valuesNotifier.value = Map.from(_currentValues);
-            if (_isLogging) _dataLogger.logData(vd);
-          } catch (_) {}
-        }
-      }
+      if (!cleaned.contains('41 ${pid.pid}')) continue;
+      final parts = cleaned.split(' ');
+      final idx = parts.indexOf('41');
+      if (idx < 0 || parts.length < idx + 2 + pid.bytes) continue;
+      try {
+        final bytes = List.generate(pid.bytes, (i) => int.parse(parts[idx + 2 + i], radix: 16));
+        final value = pid.formula(bytes) as double;
+        final vd = VehicleData(pidCode: entry.key, value: value, unit: pid.unit, timestamp: DateTime.now());
+        setState(() {
+          _currentValues[entry.key] = value;
+          _liveDataHistory.putIfAbsent(entry.key, () => []).add(vd);
+          if ((_liveDataHistory[entry.key]?.length ?? 0) > 120) {
+            _liveDataHistory[entry.key]!.removeAt(0);
+          }
+        });
+        _valuesNotifier.value = Map.from(_currentValues);
+        if (_isLogging) _dataLogger.logData(vd);
+      } catch (_) {}
     }
-    _updateTripData();
+    _updateTrip();
     _checkAlerts();
   }
 
-  // ─── TRIP TRACKING ────────────────────────────────────
-  void _updateTripData() {
+  String _cleanHex(String raw) =>
+      raw.replaceAll(RegExp(r'[\r\n]'), ' ')
+         .replaceAll(RegExp(r'SEARCHING\.?\.?\.?'), '')
+         .replaceAll(RegExp(r'[^0-9A-Fa-f\s]'), ' ')
+         .replaceAll(RegExp(r'\s+'), ' ')
+         .trim()
+         .toUpperCase();
+
+  // ══════════════════════════════════════════════════════
+  // TRIP
+  // ══════════════════════════════════════════════════════
+  void _updateTrip() {
     final now = DateTime.now();
     if (_lastTripTime == null) { _lastTripTime = now; return; }
     final dt = now.difference(_lastTripTime!).inMilliseconds / 1000.0;
     _lastTripTime = now;
-
-    final speed = _currentValues['010D'] ?? 0;
-    final maf = _currentValues['0110'] ?? 0;
-    final rpm = _currentValues['010C'] ?? 0;
-    final coolant = _currentValues['0105'] ?? 0;
-
-    // Distance (km)
+    final speed = _val('010D'), maf = _val('0110'),
+          rpm = _val('010C'), cool = _val('0105');
     _tripDistanceKm += (speed / 3600.0) * dt;
     if (speed > _tripMaxSpeed) _tripMaxSpeed = speed;
     _tripSpeedSum += speed; _tripSpeedSamples++;
-
-    // Fuel from MAF: L = MAF(g/s) / (AFR * density) * dt
-    // Gasoline: AFR=14.7, density=720 g/L
-    final fuelRate = maf / (14.7 * 720.0); // L/s
+    final fuelRate = maf / (14.7 * 720.0);
     _tripFuelL += fuelRate * dt;
-
-    // Current instant fuel economy L/100km
-    if (speed > 5) {
-      _currentFuelL100km = fuelRate / (speed / 3600000.0); // L/100km
-    }
-
-    // Engine stats
+    if (speed > 5) _currentFuelL100km = fuelRate / (speed / 3600000.0);
     _tripRpmSum += rpm; _tripRpmSamples++;
-    if (coolant > _tripMaxCoolant) _tripMaxCoolant = coolant;
+    if (cool > _tripMaxCoolant) _tripMaxCoolant = cool;
   }
 
   TripData get _tripData => TripData(
@@ -307,93 +331,50 @@ class _HomeScreenState extends State<HomeScreen>
     tripStart: _tripStart ?? DateTime.now(),
   );
 
-  // ─── AD-GATED NAVIGATION ──────────────────────────────
-  void _openDashboard() {
-    if (_dashboardUnlocked) {
-      Navigator.push(context, MaterialPageRoute(builder: (_) => DashboardScreen(valuesNotifier: _valuesNotifier)));
-      return;
-    }
-    AdGateDialog.show(
-      context,
-      featureName: "🎛 Live Gauge Dashboard",
-      featureDescription: "Watch a short ad to unlock the full real-time gauge dashboard with RPM, Speed and 9 sensor tiles.",
-      featureIcon: Icons.speed,
-      onUnlocked: () {
-        setState(() => _dashboardUnlocked = true);
-        Navigator.push(context, MaterialPageRoute(builder: (_) => DashboardScreen(valuesNotifier: _valuesNotifier)));
-      },
-    );
-  }
-
-  void _openPerformance() {
-    if (_performanceUnlocked) {
-      Navigator.push(context, MaterialPageRoute(builder: (_) => PerformanceScreen(valuesNotifier: _valuesNotifier)));
-      return;
-    }
-    AdGateDialog.show(
-      context,
-      featureName: "⚡ 0-100 Performance Test",
-      featureDescription: "Watch a short ad to unlock the 0-60 / 0-80 / 0-100 km\/h acceleration timer.",
-      featureIcon: Icons.timer,
-      onUnlocked: () {
-        setState(() => _performanceUnlocked = true);
-        Navigator.push(context, MaterialPageRoute(builder: (_) => PerformanceScreen(valuesNotifier: _valuesNotifier)));
-      },
-    );
-  }
-
   void _resetTrip() {
     setState(() {
-      _tripDistanceKm = 0; _tripMaxSpeed = 0;
-      _tripSpeedSum = 0; _tripSpeedSamples = 0;
-      _tripFuelL = 0; _tripMaxCoolant = 0;
-      _tripRpmSum = 0; _tripRpmSamples = 0;
-      _tripStart = DateTime.now(); _lastTripTime = DateTime.now();
-      _currentFuelL100km = 0;
+      _tripDistanceKm = 0; _tripMaxSpeed = 0; _tripSpeedSum = 0; _tripSpeedSamples = 0;
+      _tripFuelL = 0; _tripMaxCoolant = 0; _tripRpmSum = 0; _tripRpmSamples = 0;
+      _tripStart = DateTime.now(); _lastTripTime = DateTime.now(); _currentFuelL100km = 0;
     });
-    appendLog('🔄 Trip data reset');
+    appendLog('🔄 Trip reset');
   }
 
-  // ─── ALERT SYSTEM ─────────────────────────────────────
+  // ══════════════════════════════════════════════════════
+  // ALERTS
+  // ══════════════════════════════════════════════════════
   void _checkAlerts() {
-    final coolant = _currentValues['0105'] ?? 0;
-    final rpm = _currentValues['010C'] ?? 0;
-    final stft = (_currentValues['0106'] ?? 0).abs();
-
-    if (coolant > 108) _showAlert('🌡 High Coolant Temperature!', '${coolant.toStringAsFixed(0)}°C — Stop engine safely!', Colors.red, 'coolant_high');
-    if (rpm > 6500) _showAlert('⚡ High RPM Warning', '${rpm.toStringAsFixed(0)} rpm — Ease off throttle', Colors.orange, 'rpm_high');
-    if (stft > 20) _showAlert('⛽ Fuel Trim Alert', 'STFT ${stft.toStringAsFixed(1)}% — Possible vacuum leak', Colors.orange, 'stft_high');
+    final cool = _val('0105'), rpm = _val('010C'), stft = _val('0106').abs();
+    if (cool > 108) _showAlert('🌡 High Coolant!', '${cool.toStringAsFixed(0)}°C — Pull over safely', Colors.red, 'cool');
+    if (rpm > 6500) _showAlert('⚡ High RPM', '${rpm.toStringAsFixed(0)} rpm — Ease throttle', Colors.orange, 'rpm');
+    if (stft > 20)  _showAlert('⛽ Fuel Trim Alert', 'STFT ${stft.toStringAsFixed(1)}% — Check for leaks', Colors.orange, 'stft');
   }
 
   void _showAlert(String title, String msg, Color color, String key) {
     if (_alertsSent.contains(key) || !mounted) return;
     _alertsSent.add(key);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(title, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
-          Text(msg, style: const TextStyle(fontSize: 12, color: Colors.white70)),
-        ]),
-        backgroundColor: color,
-        duration: const Duration(seconds: 6),
-        action: SnackBarAction(label: 'OK', textColor: Colors.white, onPressed: () {}),
-      ),
-    );
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(title, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
+        Text(msg, style: const TextStyle(fontSize: 12, color: Colors.white70)),
+      ]),
+      backgroundColor: color, duration: const Duration(seconds: 5),
+    ));
     Future.delayed(const Duration(minutes: 3), () => _alertsSent.remove(key));
   }
 
-  // ─── VEHICLE INFO ──────────────────────────────────────
+  // ══════════════════════════════════════════════════════
+  // VEHICLE INFO & READINESS
+  // ══════════════════════════════════════════════════════
   Future<void> _getVehicleInfo() async {
     try {
       await _obd.sendCommand('0902');
       await Future.delayed(const Duration(milliseconds: 500));
       final r = await _obd.readResponse(timeout: const Duration(seconds: 2));
-      setState(() {
-        _vehicleInfo = VehicleInfo(
-          vin: r != null && r.contains('49 02') ? 'VIN Available' : 'Not Available',
-          protocol: 'Auto',
-        );
-      });
+      setState(() => _vehicleInfo = VehicleInfo(
+        vin: r != null && r.contains('49 02') ? 'VIN Available' : 'Not Available',
+        protocol: 'Auto',
+      ));
     } catch (_) {
       setState(() => _vehicleInfo = VehicleInfo(vin: 'N/A', protocol: 'Auto'));
     }
@@ -405,106 +386,106 @@ class _HomeScreenState extends State<HomeScreen>
       await Future.delayed(const Duration(milliseconds: 500));
       final r = await _obd.readResponse(timeout: const Duration(seconds: 2));
       setState(() {
-        _readinessMonitors = r != null && r.contains('41 01')
-            ? [
-                ReadinessMonitor(name: 'Misfire', isSupported: true, isComplete: true),
-                ReadinessMonitor(name: 'Fuel System', isSupported: true, isComplete: true),
-                ReadinessMonitor(name: 'Components', isSupported: true, isComplete: false),
-                ReadinessMonitor(name: 'Catalyst', isSupported: true, isComplete: true),
-                ReadinessMonitor(name: 'Evaporative', isSupported: true, isComplete: false),
-                ReadinessMonitor(name: 'O2 Sensor', isSupported: true, isComplete: true),
-                ReadinessMonitor(name: 'O2 Heater', isSupported: true, isComplete: true),
-                ReadinessMonitor(name: 'EGR', isSupported: false, isComplete: false),
-              ]
-            : [ReadinessMonitor(name: 'System Ready', isSupported: true, isComplete: true)];
+        _readinessMonitors = r != null && r.contains('41 01') ? [
+          ReadinessMonitor(name: 'Misfire',     isSupported: true, isComplete: true),
+          ReadinessMonitor(name: 'Fuel System', isSupported: true, isComplete: true),
+          ReadinessMonitor(name: 'Components',  isSupported: true, isComplete: false),
+          ReadinessMonitor(name: 'Catalyst',    isSupported: true, isComplete: true),
+          ReadinessMonitor(name: 'Evaporative', isSupported: true, isComplete: false),
+          ReadinessMonitor(name: 'O2 Sensor',   isSupported: true, isComplete: true),
+          ReadinessMonitor(name: 'O2 Heater',   isSupported: true, isComplete: true),
+          ReadinessMonitor(name: 'EGR',         isSupported: false, isComplete: false),
+        ] : _defaultReadiness();
       });
     } catch (_) {}
   }
 
-  // ─── DTC ──────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════
+  // DTC
+  // ══════════════════════════════════════════════════════
   Future<void> scanDTC() async {
-    if (connected == null) return;
+    _maybeShowInterstitial();
+    if (connected == null) { _noConnSnack(); return; }
     appendLog('🔎 Scanning DTCs...');
     await _obd.sendCommand('03');
     await Future.delayed(const Duration(milliseconds: 700));
-    final confirmedRes = await _obd.readResponse(timeout: const Duration(seconds: 3));
+    final cr = await _obd.readResponse(timeout: const Duration(seconds: 3));
     await _obd.sendCommand('07');
     await Future.delayed(const Duration(milliseconds: 700));
-    final pendingRes = await _obd.readResponse(timeout: const Duration(seconds: 3));
-
-    final confirmed = _parseDTC(_cleanHex(confirmedRes ?? ''));
-    final pending = _parseDTC(_cleanHex(pendingRes ?? ''));
+    final pr = await _obd.readResponse(timeout: const Duration(seconds: 3));
+    final confirmed = _parseDTC(_cleanHex(cr ?? ''));
+    final pending   = _parseDTC(_cleanHex(pr ?? ''));
     final dtcs = <DtcModel>[];
-
-    for (final code in confirmed) {
-      final info = EnhancedDtcDatabase.getDtcInfo(code);
-      dtcs.add(DtcModel(code: code, description: info.description, status: 'Confirmed', firstDetected: DateTime.now()));
+    for (final c in confirmed) {
+      final info = EnhancedDtcDatabase.getDtcInfo(c);
+      dtcs.add(DtcModel(code: c, description: info.description, status: 'Confirmed', firstDetected: DateTime.now()));
     }
-    for (final code in pending) {
-      if (!confirmed.contains(code)) {
-        final info = EnhancedDtcDatabase.getDtcInfo(code);
-        dtcs.add(DtcModel(code: code, description: info.description, status: 'Pending'));
+    for (final c in pending) {
+      if (!confirmed.contains(c)) {
+        final info = EnhancedDtcDatabase.getDtcInfo(c);
+        dtcs.add(DtcModel(code: c, description: info.description, status: 'Pending'));
       }
     }
     setState(() => _dtcList = dtcs);
     appendLog('Found ${dtcs.length} DTC(s)');
-    if (dtcs.isNotEmpty && mounted) _showDtcDialog(dtcs);
-    // ── show interstitial every 3 scans ──
-    _dtcScanCount++;
-    if (_dtcScanCount % 3 == 0) AdManager.instance.showInterstitial();
-    else if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('✅ No trouble codes!'), backgroundColor: Colors.green));
-  }
-
-  void _showDtcDialog(List<DtcModel> dtcs) {
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: Row(children: [Icon(Icons.error_outline, color: Colors.red.shade700), const SizedBox(width: 8), const Text('Fault Codes Found')]),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: ListView.builder(
-            shrinkWrap: true,
-            itemCount: dtcs.length,
-            itemBuilder: (_, i) {
-              final dtc = dtcs[i];
-              final info = EnhancedDtcDatabase.getDtcInfo(dtc.code);
-              return Card(
-                color: dtc.status == 'Confirmed' ? Colors.red.shade50 : Colors.orange.shade50,
-                margin: const EdgeInsets.only(bottom: 8),
-                child: ListTile(
-                  leading: Icon(Icons.error, color: dtc.status == 'Confirmed' ? Colors.red : Colors.orange, size: 28),
-                  title: Text(dtc.code, style: const TextStyle(fontWeight: FontWeight.bold, fontFamily: 'monospace', fontSize: 16)),
-                  subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    const SizedBox(height: 4),
-                    Text(dtc.description, style: const TextStyle(fontWeight: FontWeight.w500)),
-                    Text('Fix: ${info.recommendation}', style: const TextStyle(fontSize: 11)),
-                    Text('Priority: ${info.priority}', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: info.priority == 'High' ? Colors.red : Colors.orange)),
-                  ]),
-                ),
-              );
-            },
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
-          ElevatedButton(
-            onPressed: () { Navigator.pop(context); clearDTC(); },
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
-            child: const Text('Clear All'),
-          ),
-        ],
-      ),
-    );
+    if (!mounted) return;
+    if (dtcs.isNotEmpty) {
+      _showDtcDialog(dtcs);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('✅ No trouble codes!'), backgroundColor: Colors.green));
+    }
   }
 
   Future<void> clearDTC() async {
-    if (connected == null) return;
-    appendLog('🧹 Clearing DTCs...');
+    _maybeShowInterstitial();
+    if (connected == null) { _noConnSnack(); return; }
+    appendLog('🧹 Clearing...');
     await _obd.sendCommand('04');
     await Future.delayed(const Duration(milliseconds: 700));
     await _obd.readResponse(timeout: const Duration(seconds: 3));
     setState(() { _dtcList = []; _alertsSent.clear(); });
     await scanDTC();
+  }
+
+  void _showDtcDialog(List<DtcModel> dtcs) {
+    showDialog(context: context, builder: (_) => AlertDialog(
+      title: Row(children: [Icon(Icons.error_outline, color: Colors.red.shade700), const SizedBox(width: 8), const Text('Fault Codes')]),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: ListView.builder(
+          shrinkWrap: true, itemCount: dtcs.length,
+          itemBuilder: (_, i) {
+            final dtc = dtcs[i];
+            final info = EnhancedDtcDatabase.getDtcInfo(dtc.code);
+            return Card(
+              color: dtc.status == 'Confirmed' ? Colors.red.shade50 : Colors.orange.shade50,
+              margin: const EdgeInsets.only(bottom: 8),
+              child: ListTile(
+                leading: Icon(Icons.error, color: dtc.status == 'Confirmed' ? Colors.red : Colors.orange, size: 28),
+                title: Text(dtc.code, style: const TextStyle(fontWeight: FontWeight.bold, fontFamily: 'monospace', fontSize: 16)),
+                subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  const SizedBox(height: 3),
+                  Text(dtc.description, style: const TextStyle(fontWeight: FontWeight.w500)),
+                  Text('Fix: ${info.recommendation}', style: const TextStyle(fontSize: 11)),
+                  Text('Priority: ${info.priority}',
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold,
+                      color: info.priority == 'High' ? Colors.red : Colors.orange)),
+                ]),
+              ),
+            );
+          },
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
+        ElevatedButton(
+          onPressed: () { Navigator.pop(context); clearDTC(); },
+          style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
+          child: const Text('Clear All'),
+        ),
+      ],
+    ));
   }
 
   List<String> _parseDTC(String raw) {
@@ -516,34 +497,36 @@ class _HomeScreenState extends State<HomeScreen>
     for (var i = 0; i + 3 < body.length; i += 4) {
       final pair = body.substring(i, i + 4);
       if (pair == '0000') continue;
-      final code = _formatDTC(pair);
+      final code = _fmtDTC(pair);
       if (code.isNotEmpty) codes.add(code);
     }
     return codes;
   }
 
-  String _formatDTC(String p) {
+  String _fmtDTC(String p) {
     try {
       final a = int.parse(p.substring(0, 2), radix: 16);
       final b = int.parse(p.substring(2, 4), radix: 16);
-      final letter = ['P', 'C', 'B', 'U'][(a & 0xC0) >> 6];
-      return '$letter${((a & 0x30) >> 4).toRadixString(16).toUpperCase()}${(a & 0x0F).toRadixString(16).toUpperCase()}${((b & 0xF0) >> 4).toRadixString(16).toUpperCase()}${(b & 0x0F).toRadixString(16).toUpperCase()}';
+      return '${['P','C','B','U'][(a&0xC0)>>6]}'
+             '${((a&0x30)>>4).toRadixString(16).toUpperCase()}'
+             '${(a&0x0F).toRadixString(16).toUpperCase()}'
+             '${((b&0xF0)>>4).toRadixString(16).toUpperCase()}'
+             '${(b&0x0F).toRadixString(16).toUpperCase()}';
     } catch (_) { return ''; }
   }
 
-  String _cleanHex(String raw) {
-    var s = raw.replaceAll(RegExp(r'[\r\n]'), ' ').replaceAll('SEARCHING...', '').replaceAll('SEARCHING', '');
-    s = s.replaceAll(RegExp(r'[^0-9A-Fa-f\s]'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim().toUpperCase();
-    return s;
-  }
-
-  // ─── DISCONNECT & LOGGING ─────────────────────────────
+  // ══════════════════════════════════════════════════════
+  // DISCONNECT & LOGS
+  // ══════════════════════════════════════════════════════
   Future<void> disconnectDevice() async {
     _autoRefreshTimer?.cancel();
     await _obdDataSub?.cancel();
     await _obd.disconnect();
     try { await connected?.disconnect(); } catch (_) {}
-    setState(() { connected = null; _currentValues.clear(); _liveDataHistory.clear(); _alertsSent.clear(); });
+    setState(() {
+      connected = null; _currentValues.clear(); _liveDataHistory.clear();
+      _alertsSent.clear(); _readinessMonitors = _defaultReadiness();
+    });
     _valuesNotifier.value = {};
     appendLog('✓ Disconnected');
   }
@@ -551,17 +534,9 @@ class _HomeScreenState extends State<HomeScreen>
   void toggleLogging() {
     setState(() {
       _isLogging = !_isLogging;
-      if (_isLogging) { _dataLogger.startSession(); _resetTrip(); appendLog('📊 Started logging + trip'); }
-      else appendLog('⏸️ Stopped logging');
+      if (_isLogging) { _dataLogger.startSession(); _resetTrip(); appendLog('📊 Logging'); }
+      else appendLog('⏸ Stopped');
     });
-  }
-
-  Future<void> exportData() async {
-    try {
-      final file = await _dataLogger.exportToCSV();
-      await Share.shareXFiles([XFile(file.path)]);
-      appendLog('✅ Data exported');
-    } catch (e) { appendLog('❌ Export error: $e'); }
   }
 
   void appendLog(String s) {
@@ -574,21 +549,28 @@ class _HomeScreenState extends State<HomeScreen>
     });
   }
 
-  void _logLocal(String s) { fullLogs.add('[${DateTime.now().toIso8601String().substring(11, 19)}] $s'); }
+  void _logLocal(String s) =>
+    fullLogs.add('[${DateTime.now().toIso8601String().substring(11, 19)}] $s');
 
   Future<void> exportLogs() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
       final ts = DateTime.now().toIso8601String().replaceAll(':', '-').substring(0, 19);
-      final f = File('${dir.path}/obd_log_$ts.txt');
+      final f = File('${dir.path}/log_$ts.txt');
       await f.writeAsString(fullLogs.join('\n'));
       await Share.shareXFiles([XFile(f.path)]);
-    } catch (e) { appendLog('❌ Log export error: $e'); }
+    } catch (e) { appendLog('❌ $e'); }
   }
 
-  // ─── UI ───────────────────────────────────────────────
+  void _noConnSnack() => ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(content: Text('⚠️ Connect OBD first — Devices tab'), duration: Duration(seconds: 2)));
+
+  // ══════════════════════════════════════════════════════
+  // BUILD
+  // ══════════════════════════════════════════════════════
   @override
   Widget build(BuildContext context) {
+    final conn = connected != null;
     return Scaffold(
       backgroundColor: Colors.grey.shade100,
       appBar: AppBar(
@@ -596,222 +578,225 @@ class _HomeScreenState extends State<HomeScreen>
           const Icon(Icons.directions_car, color: Colors.white),
           const SizedBox(width: 8),
           const Text('Car Kundali Pro'),
-          if (_isLogging) ...[const SizedBox(width: 8), _blinkingDot()],
+          if (_isLogging) ...[const SizedBox(width: 8), _blinkDot()],
         ]),
         backgroundColor: Colors.blue.shade800,
         foregroundColor: Colors.white,
         elevation: 0,
         actions: [
-          if (connected != null)
-            IconButton(
-              onPressed: toggleLogging,
-              icon: Icon(_isLogging ? Icons.stop_circle : Icons.fiber_manual_record),
-              color: _isLogging ? Colors.red.shade300 : Colors.white,
-              tooltip: _isLogging ? 'Stop Logging' : 'Start Logging',
-            ),
-          IconButton(onPressed: exportLogs, icon: const Icon(Icons.download), tooltip: 'Export Logs'),
-        ],
-      ),
-      body: Column(
-        children: [
-          if (connected != null) _buildConnectionBanner(),
-          const BannerAdWidget(), // ← banner ad always visible at top
-          if (connected != null) _buildCompactMetrics(),
-          if (connected != null) _buildFeatureGrid(),
-          if (connected != null) _buildActionButtons(),
-          if (connected == null) _buildScanButton(),
-          if (connected == null) const NativeAdWidget(), // ← native ad when idle
-          Expanded(
-            child: Column(
-              children: [
-                _buildTabBar(),
-                Expanded(
-                  child: TabBarView(controller: _tabs, children: [
-                    _devicesTab(),
-                    _liveDataTab(),
-                    _readinessTab(),
-                    _logsTab(),
-                    _commandsTab(),
-                  ]),
-                ),
-              ],
-            ),
+          if (conn) IconButton(
+            onPressed: toggleLogging,
+            icon: Icon(_isLogging ? Icons.stop_circle : Icons.fiber_manual_record),
+            color: _isLogging ? Colors.red.shade300 : Colors.white,
+          ),
+          IconButton(
+            onPressed: () { _maybeShowInterstitial(); exportLogs(); },
+            icon: const Icon(Icons.download),
           ),
         ],
       ),
-    );
-  }
-
-  Widget _blinkingDot() {
-    return TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0, end: 1),
-      duration: const Duration(milliseconds: 800),
-      builder: (_, v, __) => Container(
-        width: 8, height: 8,
-        decoration: BoxDecoration(color: Colors.red.withOpacity(v), shape: BoxShape.circle),
-      ),
-    );
-  }
-
-  Widget _buildConnectionBanner() {
-    return Container(
-      margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(colors: [Colors.green.shade600, Colors.green.shade400], begin: Alignment.topLeft, end: Alignment.bottomRight),
-        borderRadius: BorderRadius.circular(14),
-        boxShadow: [BoxShadow(color: Colors.green.withOpacity(0.3), blurRadius: 10, offset: const Offset(0, 4))],
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.bluetooth_connected, color: Colors.white, size: 28),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Text('Connected', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
-              Text(connected?.platformName ?? 'OBD-II Device', style: TextStyle(color: Colors.white.withOpacity(0.85), fontSize: 12)),
-            ]),
-          ),
-          if (_isLogging)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(8)),
-              child: const Text('REC', style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
-            ),
-          const SizedBox(width: 8),
-          IconButton(onPressed: disconnectDevice, icon: const Icon(Icons.power_settings_new, color: Colors.white), tooltip: 'Disconnect'),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildCompactMetrics() {
-    return SizedBox(
-      height: 90,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
-        children: [
-          _metricChip('RPM', _currentValues['010C']?.toStringAsFixed(0) ?? '--', Colors.blue),
-          _metricChip('Speed', '${_currentValues['010D']?.toStringAsFixed(0) ?? '--'} km/h', Colors.green),
-          _metricChip('Coolant', '${_currentValues['0105']?.toStringAsFixed(0) ?? '--'}°C', (_currentValues['0105'] ?? 0) > 100 ? Colors.red : Colors.orange),
-          _metricChip('Load', '${_currentValues['0104']?.toStringAsFixed(0) ?? '--'}%', Colors.purple),
-          _metricChip('MAF', '${_currentValues['0110']?.toStringAsFixed(1) ?? '--'} g/s', Colors.teal),
-          _metricChip('L/100', _currentFuelL100km > 0 ? _currentFuelL100km.toStringAsFixed(1) : '--', Colors.indigo),
-        ],
-      ),
-    );
-  }
-
-  Widget _metricChip(String label, String value, Color color) {
-    return Container(
-      margin: const EdgeInsets.only(right: 10),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(colors: [color.withOpacity(0.9), color.withOpacity(0.7)], begin: Alignment.topLeft, end: Alignment.bottomRight),
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: [BoxShadow(color: color.withOpacity(0.25), blurRadius: 6, offset: const Offset(0, 3))],
-      ),
-      child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-        Text(value, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
-        Text(label, style: TextStyle(color: Colors.white.withOpacity(0.8), fontSize: 10)),
+      body: Column(children: [
+        _buildStatusBar(conn),
+        const BannerAdWidget(),          // ← banner always
+        _buildMetricsRow(conn),          // ← always, 0 when not connected
+        _buildFeatureGrid(),             // ← always
+        _buildActionButtons(conn),       // ← always
+        Expanded(
+          child: Column(children: [
+            _buildTabBar(),
+            Expanded(child: TabBarView(controller: _tabs, children: [
+              _devicesTab(),
+              _liveDataTab(conn),
+              _readinessTab(conn),
+              _logsTab(),
+              _commandsTab(conn),
+            ])),
+          ]),
+        ),
       ]),
     );
   }
 
-  Widget _buildFeatureGrid() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
-      child: Row(
-        children: [
-          Expanded(child: _featureCard('🎛 Dashboard', 'Live Gauges', Colors.blue, _openDashboard)),
-          const SizedBox(width: 10),
-          Expanded(child: _featureCard('❤️ Health', '${_dtcList.isEmpty ? "All OK" : "${_dtcList.length} codes"}', Colors.green, () => Navigator.push(context, MaterialPageRoute(builder: (_) => HealthScreen(dtcList: _dtcList, liveValues: _currentValues, readinessMonitors: _readinessMonitors))))),
-          const SizedBox(width: 10),
-          Expanded(child: _featureCard('🗺 Trip', '${_tripDistanceKm.toStringAsFixed(1)} km', Colors.orange, () => Navigator.push(context, MaterialPageRoute(builder: (_) => TripScreen(tripData: _tripData))))),
-          const SizedBox(width: 10),
-          Expanded(child: _featureCard('⚡ Perf', '0-100', Colors.red, _openPerformance)),
-        ],
-      ),
-    );
-  }
+  Widget _blinkDot() => TweenAnimationBuilder<double>(
+    tween: Tween(begin: 0.2, end: 1.0),
+    duration: const Duration(milliseconds: 600),
+    builder: (_, v, __) => Container(
+      width: 8, height: 8,
+      decoration: BoxDecoration(color: Colors.red.withOpacity(v), shape: BoxShape.circle),
+    ),
+  );
 
-  Widget _featureCard(String title, String subtitle, Color color, VoidCallback onTap) {
+  // ── STATUS BAR ────────────────────────────────────────
+  Widget _buildStatusBar(bool conn) {
     return GestureDetector(
-      onTap: onTap,
+      onTap: () { _maybeShowInterstitial(); conn ? disconnectDevice() : _tabs.animateTo(0); },
       child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+        margin: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(12),
-          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 8, offset: const Offset(0, 2))],
-          border: Border.all(color: color.withOpacity(0.2)),
+          gradient: LinearGradient(
+            colors: conn ? [Colors.green.shade600, Colors.green.shade400] : [Colors.grey.shade600, Colors.grey.shade500],
+            begin: Alignment.topLeft, end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(14),
+          boxShadow: [BoxShadow(color: (conn ? Colors.green : Colors.grey).withOpacity(0.3), blurRadius: 8, offset: const Offset(0, 3))],
         ),
-        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-          Text(title, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
-          const SizedBox(height: 3),
-          Text(subtitle, style: TextStyle(fontSize: 10, color: color, fontWeight: FontWeight.w500), textAlign: TextAlign.center, overflow: TextOverflow.ellipsis),
+        child: Row(children: [
+          Icon(conn ? Icons.bluetooth_connected : Icons.bluetooth_disabled, color: Colors.white, size: 20),
+          const SizedBox(width: 10),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(
+              conn ? 'Connected — ${connected?.platformName ?? "OBD Device"}' : 'Not Connected — Tap Devices to connect',
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+            ),
+            Text(
+              conn ? 'Receiving live data  •  Tap to disconnect' : 'Plug ELM327 into OBD port and connect',
+              style: TextStyle(color: Colors.white.withOpacity(0.75), fontSize: 10),
+            ),
+          ])),
+          if (_isLogging)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+              decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(5)),
+              child: const Text('REC', style: TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold)),
+            ),
+          const SizedBox(width: 4),
+          Icon(conn ? Icons.power_settings_new : Icons.chevron_right, color: Colors.white, size: 20),
         ]),
       ),
     );
   }
 
-  Widget _buildActionButtons() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
-      child: Row(
+  // ── METRICS ROW — always visible ─────────────────────
+  Widget _buildMetricsRow(bool conn) {
+    return SizedBox(
+      height: 78,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
         children: [
-          Expanded(
-            child: ElevatedButton.icon(
-              onPressed: scanDTC,
-              icon: const Icon(Icons.search, size: 18),
-              label: const Text('Scan DTC', style: TextStyle(fontWeight: FontWeight.bold)),
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade600, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 14), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: ElevatedButton.icon(
-              onPressed: clearDTC,
-              icon: const Icon(Icons.cleaning_services, size: 18),
-              label: const Text('Clear DTC', style: TextStyle(fontWeight: FontWeight.bold)),
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.orange.shade600, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 14), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-            ),
-          ),
-          const SizedBox(width: 10),
-          ElevatedButton.icon(
-            onPressed: _resetTrip,
-            icon: const Icon(Icons.restart_alt, size: 18),
-            label: const Text('Trip', style: TextStyle(fontWeight: FontWeight.bold)),
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.blue.shade600, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-          ),
+          _chip('RPM',    _val('010C').toStringAsFixed(0),   'rpm',  Colors.blue,              conn),
+          _chip('SPEED',  _val('010D').toStringAsFixed(0),   'km/h', Colors.green,             conn),
+          _chip('COOL',   _val('0105').toStringAsFixed(0),   '°C',   _val('0105')>100 ? Colors.red : Colors.orange, conn),
+          _chip('LOAD',   _val('0104').toStringAsFixed(0),   '%',    Colors.purple,            conn),
+          _chip('MAF',    _val('0110').toStringAsFixed(1),   'g/s',  Colors.teal,              conn),
+          _chip('L/100',  _currentFuelL100km > 0 ? _currentFuelL100km.toStringAsFixed(1) : '0', '', Colors.indigo, conn),
+          _chip('VOLT',   _val('0142') > 0 ? _val('0142').toStringAsFixed(1) : '0', 'V', Colors.amber.shade700, conn),
         ],
       ),
     );
   }
 
-  Widget _buildScanButton() {
+  Widget _chip(String label, String value, String unit, Color color, bool live) {
+    return GestureDetector(
+      onTap: _maybeShowInterstitial,
+      child: Container(
+        margin: const EdgeInsets.only(right: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: live ? [color.withOpacity(0.9), color.withOpacity(0.7)] : [Colors.grey.shade400, Colors.grey.shade500],
+          ),
+          borderRadius: BorderRadius.circular(11),
+          boxShadow: [BoxShadow(color: color.withOpacity(live ? 0.25 : 0.08), blurRadius: 5, offset: const Offset(0, 2))],
+        ),
+        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          Text('$value${unit.isNotEmpty ? " $unit" : ""}',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: live ? 14 : 12)),
+          const SizedBox(height: 2),
+          Text(label, style: TextStyle(color: Colors.white.withOpacity(0.8), fontSize: 9)),
+          if (!live) Text('- - -', style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 8)),
+        ]),
+      ),
+    );
+  }
+
+  // ── FEATURE GRID — always visible, taps = ad + navigate ─
+  Widget _buildFeatureGrid() {
     return Padding(
-      padding: const EdgeInsets.all(16),
-      child: SizedBox(
-        width: double.infinity,
-        child: ElevatedButton.icon(
-          onPressed: _isScanning ? null : startScan,
-          icon: _isScanning ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Icon(Icons.bluetooth_searching),
-          label: Text(_isScanning ? 'Scanning...' : 'Scan for OBD Devices'),
-          style: ElevatedButton.styleFrom(backgroundColor: Colors.blue.shade700, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 18), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), elevation: 4),
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+      child: Row(children: [
+        _fCard('🎛', 'Dashboard', 'Gauges', Colors.blue, () =>
+          _navigate(DashboardScreen(valuesNotifier: _valuesNotifier))),
+        const SizedBox(width: 8),
+        _fCard('❤️', 'Health', _dtcList.isEmpty ? 'All OK' : '${_dtcList.length} codes', Colors.green, () =>
+          _navigate(HealthScreen(dtcList: _dtcList, liveValues: _currentValues, readinessMonitors: _readinessMonitors))),
+        const SizedBox(width: 8),
+        _fCard('🗺', 'Trip', '${_tripDistanceKm.toStringAsFixed(1)} km', Colors.orange, () =>
+          _navigate(TripScreen(tripData: _tripData))),
+        const SizedBox(width: 8),
+        _fCard('⚡', 'Perf', '0-100', Colors.red, () =>
+          _navigate(PerformanceScreen(valuesNotifier: _valuesNotifier))),
+      ]),
+    );
+  }
+
+  Widget _fCard(String emoji, String title, String sub, Color color, VoidCallback onTap) {
+    return Expanded(
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 4),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 6, offset: const Offset(0, 2))],
+            border: Border.all(color: color.withOpacity(0.2)),
+          ),
+          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+            Text(emoji, style: const TextStyle(fontSize: 18)),
+            const SizedBox(height: 2),
+            Text(title, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
+            Text(sub, style: TextStyle(fontSize: 9, color: color, fontWeight: FontWeight.w500),
+              textAlign: TextAlign.center, overflow: TextOverflow.ellipsis),
+          ]),
         ),
       ),
     );
   }
 
+  // ── ACTION BUTTONS ────────────────────────────────────
+  Widget _buildActionButtons(bool conn) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 7, 12, 4),
+      child: Row(children: [
+        Expanded(child: ElevatedButton.icon(
+          onPressed: scanDTC,
+          icon: const Icon(Icons.search, size: 16),
+          label: const Text('Scan DTC', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+          style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade600, foregroundColor: Colors.white,
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+        )),
+        const SizedBox(width: 8),
+        Expanded(child: ElevatedButton.icon(
+          onPressed: clearDTC,
+          icon: const Icon(Icons.cleaning_services, size: 16),
+          label: const Text('Clear DTC', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+          style: ElevatedButton.styleFrom(backgroundColor: Colors.orange.shade600, foregroundColor: Colors.white,
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+        )),
+        const SizedBox(width: 8),
+        ElevatedButton(
+          onPressed: () { _maybeShowInterstitial(); _resetTrip(); },
+          style: ElevatedButton.styleFrom(backgroundColor: Colors.blue.shade600, foregroundColor: Colors.white,
+            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 12),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+          child: const Icon(Icons.restart_alt, size: 18),
+        ),
+      ]),
+    );
+  }
+
+  // ── TAB BAR ───────────────────────────────────────────
   Widget _buildTabBar() {
     return Container(
-      margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+      margin: const EdgeInsets.fromLTRB(12, 5, 12, 0),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 8)],
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(14)),
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 6)],
       ),
       child: TabBar(
         controller: _tabs,
@@ -819,179 +804,233 @@ class _HomeScreenState extends State<HomeScreen>
         unselectedLabelColor: Colors.grey.shade500,
         indicatorColor: Colors.blue.shade700,
         indicatorWeight: 3,
-        labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11),
+        labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 10),
+        onTap: (_) => _maybeShowInterstitial(), // ← ad on tab switch
         tabs: const [
-          Tab(icon: Icon(Icons.bluetooth, size: 20), text: 'Devices'),
-          Tab(icon: Icon(Icons.show_chart, size: 20), text: 'Live'),
-          Tab(icon: Icon(Icons.verified, size: 20), text: 'Readiness'),
-          Tab(icon: Icon(Icons.article, size: 20), text: 'Logs'),
-          Tab(icon: Icon(Icons.terminal, size: 20), text: 'Terminal'),
+          Tab(icon: Icon(Icons.bluetooth,  size: 18), text: 'Devices'),
+          Tab(icon: Icon(Icons.show_chart, size: 18), text: 'Live'),
+          Tab(icon: Icon(Icons.verified,   size: 18), text: 'Ready'),
+          Tab(icon: Icon(Icons.article,    size: 18), text: 'Logs'),
+          Tab(icon: Icon(Icons.terminal,   size: 18), text: 'Terminal'),
         ],
       ),
     );
   }
 
-  // ─── TABS ─────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════
+  // DEVICES TAB
+  // ══════════════════════════════════════════════════════
   Widget _devicesTab() {
-    if (connected != null) {
-      return Center(
-        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-          Container(padding: const EdgeInsets.all(24), decoration: BoxDecoration(color: Colors.green.shade50, shape: BoxShape.circle), child: Icon(Icons.bluetooth_connected, size: 64, color: Colors.green.shade600)),
-          const SizedBox(height: 20),
-          Text('Connected', style: TextStyle(fontSize: 16, color: Colors.grey.shade600)),
-          const SizedBox(height: 6),
-          Text(connected?.platformName ?? 'OBD Device', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 30),
-          ElevatedButton.icon(
-            onPressed: disconnectDevice,
-            icon: const Icon(Icons.bluetooth_disabled),
-            label: const Text('Disconnect'),
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade600, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 14), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+    return ListView(
+      padding: const EdgeInsets.all(14),
+      children: [
+        SizedBox(
+          width: double.infinity,
+          child: ElevatedButton.icon(
+            onPressed: _isScanning ? null : () { _maybeShowInterstitial(); startScan(); },
+            icon: _isScanning
+                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                : const Icon(Icons.bluetooth_searching),
+            label: Text(_isScanning ? 'Scanning...' : 'Scan for ELM327 / OBD Device'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.blue.shade700, foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
           ),
-        ]),
-      );
-    }
-
-    if (scanResults.isEmpty) {
-      return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-        Icon(Icons.bluetooth_searching, size: 80, color: Colors.grey.shade300),
-        const SizedBox(height: 20),
-        Text('No devices found', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.grey.shade700)),
-        const SizedBox(height: 8),
-        Text('Tap "Scan for OBD Devices"', style: TextStyle(color: Colors.grey.shade500)),
-        const SizedBox(height: 20),
-        // Tip card
-        Container(
-          margin: const EdgeInsets.symmetric(horizontal: 40),
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(color: Colors.blue.shade50, borderRadius: BorderRadius.circular(12)),
-          child: const Text('💡 Make sure your ELM327 adapter is plugged into OBD-II port and Bluetooth is enabled on the adapter.', style: TextStyle(fontSize: 12, color: Colors.blue), textAlign: TextAlign.center),
         ),
-      ]));
-    }
-
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: scanResults.length,
-      itemBuilder: (_, i) {
-        final result = scanResults[i];
-        final name = _getDeviceName(result);
-        return Container(
-          margin: const EdgeInsets.only(bottom: 12),
-          decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 8)]),
-          child: ListTile(
-            contentPadding: const EdgeInsets.all(16),
-            leading: Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: Colors.blue.shade50, borderRadius: BorderRadius.circular(10)), child: Icon(Icons.bluetooth, color: Colors.blue.shade700, size: 26)),
-            title: Text(name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-            subtitle: Text('${result.rssi} dBm  •  ${result.device.remoteId}', style: TextStyle(fontSize: 11, color: Colors.grey.shade500)),
-            trailing: _isConnecting ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2)) : Icon(Icons.chevron_right, color: Colors.grey.shade400),
-            onTap: _isConnecting ? null : () => connectDevice(result.device),
+        const SizedBox(height: 12),
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(color: Colors.blue.shade50, borderRadius: BorderRadius.circular(10)),
+          child: const Text('💡 Plug ELM327 into OBD-II port (under dashboard). Turn ignition ON. Then tap Scan.',
+            style: TextStyle(fontSize: 12, color: Colors.blue)),
+        ),
+        const SizedBox(height: 10),
+        const NativeAdWidget(), // ← native ad in device list
+        const SizedBox(height: 6),
+        if (connected != null) ...[
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(color: Colors.green.shade50, borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.green.shade200)),
+            child: Row(children: [
+              Icon(Icons.bluetooth_connected, color: Colors.green.shade600),
+              const SizedBox(width: 10),
+              Expanded(child: Text('Connected: ${connected!.platformName}',
+                style: const TextStyle(fontWeight: FontWeight.bold))),
+              TextButton(
+                onPressed: () { _maybeShowInterstitial(); disconnectDevice(); },
+                child: const Text('Disconnect', style: TextStyle(color: Colors.red)),
+              ),
+            ]),
           ),
-        );
-      },
+          const SizedBox(height: 8),
+        ],
+        ...scanResults.map((r) {
+          final name = _deviceName(r);
+          return Container(
+            margin: const EdgeInsets.only(bottom: 10),
+            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12),
+              boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 6)]),
+            child: ListTile(
+              contentPadding: const EdgeInsets.all(12),
+              leading: Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(color: Colors.blue.shade50, borderRadius: BorderRadius.circular(10)),
+                child: Icon(Icons.bluetooth, color: Colors.blue.shade700),
+              ),
+              title: Text(name, style: const TextStyle(fontWeight: FontWeight.bold)),
+              subtitle: Text('${r.rssi} dBm  •  ${r.device.remoteId}', style: const TextStyle(fontSize: 11)),
+              trailing: _isConnecting
+                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                  : Icon(Icons.chevron_right, color: Colors.grey.shade400),
+              onTap: _isConnecting ? null : () { _maybeShowInterstitial(); connectDevice(r.device); },
+            ),
+          );
+        }).toList(),
+      ],
     );
   }
 
-  Widget _liveDataTab() {
-    if (connected == null) return _notConnectedPlaceholder();
-    if (_currentValues.isEmpty) return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [CircularProgressIndicator(color: Colors.blue.shade700), const SizedBox(height: 20), const Text('Waiting for data...')]));
-
-    return LiveDataScreen(currentValues: _currentValues, historyData: _liveDataHistory);
+  // ══════════════════════════════════════════════════════
+  // LIVE DATA TAB — shows 0s when not connected
+  // ══════════════════════════════════════════════════════
+  Widget _liveDataTab(bool conn) {
+    return Column(children: [
+      if (!conn)
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 14),
+          color: Colors.orange.shade50,
+          child: Row(children: [
+            Icon(Icons.info_outline, color: Colors.orange.shade700, size: 14),
+            const SizedBox(width: 6),
+            Text('Demo mode — Connect OBD for live data',
+              style: TextStyle(fontSize: 11, color: Colors.orange.shade800)),
+          ]),
+        ),
+      Expanded(child: LiveDataScreen(currentValues: _currentValues, historyData: _liveDataHistory)),
+    ]);
   }
 
-  Widget _readinessTab() {
-    if (connected == null) return _notConnectedPlaceholder();
+  // ══════════════════════════════════════════════════════
+  // READINESS TAB — shows Unknown when not connected
+  // ══════════════════════════════════════════════════════
+  Widget _readinessTab(bool conn) {
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(14),
       children: [
-        if (_readinessMonitors.isNotEmpty)
+        if (!conn)
           Container(
-            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 8)]),
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('Readiness Monitors', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 12),
-                ..._readinessMonitors.map((m) => Container(
-                  margin: const EdgeInsets.only(bottom: 10),
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: m.isComplete ? Colors.green.shade50 : Colors.orange.shade50,
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: m.isComplete ? Colors.green.shade200 : Colors.orange.shade200),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(m.isComplete ? Icons.check_circle : Icons.pending, color: m.isComplete ? Colors.green : Colors.orange),
-                      const SizedBox(width: 12),
-                      Expanded(child: Text(m.name, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500))),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                        decoration: BoxDecoration(color: m.isComplete ? Colors.green.shade600 : Colors.orange.shade600, borderRadius: BorderRadius.circular(6)),
-                        child: Text(m.isComplete ? 'Ready' : 'Not Ready', style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
-                      ),
-                    ],
-                  ),
-                )).toList(),
-              ],
-            ),
+            margin: const EdgeInsets.only(bottom: 10),
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(color: Colors.orange.shade50, borderRadius: BorderRadius.circular(10)),
+            child: Row(children: [
+              Icon(Icons.link_off, color: Colors.orange.shade700, size: 14),
+              const SizedBox(width: 6),
+              Text('Connect OBD to read real readiness', style: TextStyle(fontSize: 11, color: Colors.orange.shade800)),
+            ]),
           ),
+        Container(
+          decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14),
+            boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 6)]),
+          padding: const EdgeInsets.all(14),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('Emission Readiness',
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: conn ? Colors.black : Colors.grey.shade600)),
+            const SizedBox(height: 12),
+            ..._readinessMonitors.map((m) => GestureDetector(
+              onTap: _maybeShowInterstitial,
+              child: Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.all(11),
+                decoration: BoxDecoration(
+                  color: !conn ? Colors.grey.shade50 : m.isComplete ? Colors.green.shade50 : Colors.orange.shade50,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: !conn ? Colors.grey.shade200 : m.isComplete ? Colors.green.shade200 : Colors.orange.shade200),
+                ),
+                child: Row(children: [
+                  Icon(
+                    !conn ? Icons.help_outline : m.isComplete ? Icons.check_circle : Icons.pending,
+                    color: !conn ? Colors.grey : m.isComplete ? Colors.green : Colors.orange, size: 20,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(child: Text(m.name, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500))),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: !conn ? Colors.grey : m.isComplete ? Colors.green.shade600 : Colors.orange.shade600,
+                      borderRadius: BorderRadius.circular(5),
+                    ),
+                    child: Text(
+                      !conn ? 'Unknown' : m.isComplete ? 'Ready' : 'Not Ready',
+                      style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ]),
+              ),
+            )).toList(),
+          ]),
+        ),
         if (_vehicleInfo != null) ...[
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
           Container(
-            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 8)]),
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('Vehicle Info', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 12),
-                _infoRow('VIN', _vehicleInfo!.vin ?? 'N/A'),
-                _infoRow('Protocol', _vehicleInfo!.protocol ?? 'Auto'),
-              ],
-            ),
+            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14),
+              boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 6)]),
+            padding: const EdgeInsets.all(14),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('Vehicle Info', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 10),
+              _infoRow('VIN', _vehicleInfo!.vin ?? 'N/A'),
+              _infoRow('Protocol', _vehicleInfo!.protocol ?? 'Auto'),
+            ]),
           ),
         ],
+        const SizedBox(height: 10),
+        const NativeAdWidget(), // ← native ad at bottom
       ],
     );
   }
 
   Widget _infoRow(String label, String value) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 6),
-    child: Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [Text(label, style: TextStyle(color: Colors.grey.shade600)), Text(value, style: const TextStyle(fontWeight: FontWeight.bold))],
-    ),
+    padding: const EdgeInsets.symmetric(vertical: 5),
+    child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+      Text(label, style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
+      Text(value, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+    ]),
   );
 
+  // ══════════════════════════════════════════════════════
+  // LOGS TAB
+  // ══════════════════════════════════════════════════════
   Widget _logsTab() {
     return Column(children: [
       Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        decoration: BoxDecoration(color: Colors.grey.shade50, border: Border(bottom: BorderSide(color: Colors.grey.shade200))),
-        child: Row(
-          children: [
-            Icon(Icons.article, color: Colors.blue.shade700),
-            const SizedBox(width: 10),
-            const Expanded(child: Text('System Logs', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold))),
-            ElevatedButton.icon(
-              onPressed: exportLogs,
-              icon: const Icon(Icons.download, size: 16),
-              label: const Text('Export'),
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.blue.shade700, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
-            ),
-          ],
-        ),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        color: Colors.grey.shade50,
+        child: Row(children: [
+          Icon(Icons.article, color: Colors.blue.shade700),
+          const SizedBox(width: 10),
+          const Expanded(child: Text('System Logs', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold))),
+          ElevatedButton.icon(
+            onPressed: () { _maybeShowInterstitial(); exportLogs(); },
+            icon: const Icon(Icons.download, size: 15),
+            label: const Text('Export'),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.blue.shade700, foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+          ),
+        ]),
       ),
       Expanded(
         child: Container(
           color: const Color(0xFF1E1E1E),
-          padding: const EdgeInsets.all(14),
+          padding: const EdgeInsets.all(12),
           child: SingleChildScrollView(
             reverse: true,
             child: SelectableText(
-              logText.isEmpty ? '// Waiting for logs...' : logText,
+              logText.isEmpty ? '// Logs appear here...' : logText,
               style: const TextStyle(fontFamily: 'monospace', color: Color(0xFF4EC9B0), fontSize: 12, height: 1.5),
             ),
           ),
@@ -1000,93 +1039,86 @@ class _HomeScreenState extends State<HomeScreen>
     ]);
   }
 
-  Widget _commandsTab() {
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.all(14),
-          child: Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _commandController,
-                  decoration: InputDecoration(
-                    hintText: 'e.g. 010C, ATZ, 03',
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                    prefixIcon: const Icon(Icons.terminal),
-                    filled: true, fillColor: Colors.white,
-                  ),
-                  textCapitalization: TextCapitalization.characters,
-                  style: const TextStyle(fontFamily: 'monospace'),
-                ),
+  // ══════════════════════════════════════════════════════
+  // TERMINAL TAB
+  // ══════════════════════════════════════════════════════
+  Widget _commandsTab(bool conn) {
+    return Column(children: [
+      Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(children: [
+          Expanded(
+            child: TextField(
+              controller: _commandController,
+              decoration: InputDecoration(
+                hintText: conn ? 'e.g. 010C, ATZ, 03' : 'Connect OBD first',
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                prefixIcon: const Icon(Icons.terminal),
+                filled: true, fillColor: Colors.white,
               ),
-              const SizedBox(width: 10),
-              ElevatedButton(
-                onPressed: connected == null ? null : () async {
-                  final cmd = _commandController.text.trim().toUpperCase();
-                  if (cmd.isEmpty) return;
-                  setState(() => _commandResponse = 'Sending...');
-                  appendLog('>> $cmd');
-                  await _obd.sendCommand(cmd);
-                  await Future.delayed(const Duration(milliseconds: 500));
-                  final res = await _obd.readResponse(timeout: const Duration(seconds: 3));
-                  setState(() => _commandResponse = res ?? 'No response');
-                  appendLog('<< $_commandResponse');
-                },
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.blue.shade700, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
-                child: const Text('Send', style: TextStyle(fontWeight: FontWeight.bold)),
-              ),
-            ],
+              textCapitalization: TextCapitalization.characters,
+              style: const TextStyle(fontFamily: 'monospace'),
+            ),
           ),
-        ),
-        Expanded(
-          child: Container(
-            margin: const EdgeInsets.fromLTRB(14, 0, 14, 14),
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(10)),
-            child: SingleChildScrollView(
-              child: SelectableText(
-                _commandResponse.isEmpty ? '// Response will appear here...' : _commandResponse,
-                style: const TextStyle(fontFamily: 'monospace', color: Color(0xFF4EC9B0), fontSize: 14, height: 1.6),
-              ),
+          const SizedBox(width: 10),
+          ElevatedButton(
+            onPressed: () async {
+              final cmd = _commandController.text.trim().toUpperCase();
+              if (cmd.isEmpty) return;
+              if (!conn) { _noConnSnack(); return; }
+              _maybeShowInterstitial();
+              setState(() => _commandResponse = 'Sending...');
+              appendLog('>> $cmd');
+              await _obd.sendCommand(cmd);
+              await Future.delayed(const Duration(milliseconds: 500));
+              final res = await _obd.readResponse(timeout: const Duration(seconds: 3));
+              setState(() => _commandResponse = res ?? 'No response');
+              appendLog('<< $_commandResponse');
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: conn ? Colors.blue.shade700 : Colors.grey,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            child: const Text('Send', style: TextStyle(fontWeight: FontWeight.bold)),
+          ),
+        ]),
+      ),
+      Expanded(
+        child: Container(
+          margin: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(10)),
+          child: SingleChildScrollView(
+            child: SelectableText(
+              _commandResponse.isEmpty ? '// Response here...' : _commandResponse,
+              style: const TextStyle(fontFamily: 'monospace', color: Color(0xFF4EC9B0), fontSize: 13, height: 1.5),
             ),
           ),
         ),
-        Container(
-          padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Quick commands:', style: TextStyle(color: Colors.grey.shade600, fontSize: 12, fontWeight: FontWeight.w500)),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 6, runSpacing: 6,
-                children: [
-                  ['010C', 'RPM'], ['010D', 'Speed'], ['0105', 'Coolant'], ['0104', 'Load'],
-                  ['03', 'DTCs'], ['04', 'Clear'], ['0100', 'PIDs'], ['ATZ', 'Reset'],
-                  ['ATRV', 'Voltage'], ['0902', 'VIN'],
-                ].map((e) => InkWell(
-                  onTap: () => _commandController.text = e[0],
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    decoration: BoxDecoration(color: Colors.blue.shade50, borderRadius: BorderRadius.circular(6), border: Border.all(color: Colors.blue.shade200)),
-                    child: Text('${e[0]}  ${e[1]}', style: TextStyle(color: Colors.blue.shade700, fontSize: 11, fontFamily: 'monospace', fontWeight: FontWeight.bold)),
-                  ),
-                )).toList(),
-              ),
-            ],
-          ),
+      ),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+        child: Wrap(
+          spacing: 6, runSpacing: 6,
+          children: [
+            ['010C','RPM'], ['010D','Speed'], ['0105','Coolant'], ['0104','Load'],
+            ['03','DTCs'], ['04','Clear'], ['0100','PIDs'], ['ATZ','Reset'],
+            ['ATRV','Voltage'], ['0902','VIN'],
+          ].map((e) => GestureDetector(
+            onTap: () { _commandController.text = e[0]; _maybeShowInterstitial(); },
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(color: Colors.blue.shade50, borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: Colors.blue.shade200)),
+              child: Text('${e[0]}  ${e[1]}',
+                style: TextStyle(color: Colors.blue.shade700, fontSize: 11, fontFamily: 'monospace', fontWeight: FontWeight.bold)),
+            ),
+          )).toList(),
         ),
-      ],
-    );
+      ),
+    ]);
   }
-
-  Widget _notConnectedPlaceholder() => Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-    Icon(Icons.link_off, size: 80, color: Colors.grey.shade300),
-    const SizedBox(height: 16),
-    Text('Not Connected', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.grey.shade700)),
-    const SizedBox(height: 8),
-    Text('Connect to an OBD device first', style: TextStyle(color: Colors.grey.shade500)),
-  ]));
 }
