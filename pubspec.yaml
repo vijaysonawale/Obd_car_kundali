@@ -43,6 +43,9 @@ dependencies:
   # Add these NEW dependencies for logging
   path_provider: ^2.1.2      # For accessing device storage
   share_plus: ^7.2.2          # For sharing log files
+  # File & Storage  
+  # Charts & Graphs
+  fl_chart: ^0.66.0
 
 
 dev_dependencies:

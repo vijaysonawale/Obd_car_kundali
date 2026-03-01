@@ -13,8 +13,11 @@ class GattObdService {
   StreamSubscription? _notificationSubscription;
   String _buffer = '';
   List<int> _rawBuffer = [];
+  
+  // Track last response time to avoid hanging
+  DateTime? _lastResponseTime;
+  Timer? _timeoutTimer;
 
-  /// Connect to device and find OBD characteristics
   Future<bool> connect(BluetoothDevice device) async {
     try {
       _device = device;
@@ -23,12 +26,10 @@ class GattObdService {
       print('[OBD] Starting OBD connection process');
       print('[OBD] ═══════════════════════════════');
       
-      // Get services (already discovered)
       print('[OBD] Getting services...');
       List<BluetoothService> services = await device.discoverServices();
       print('[OBD] Found ${services.length} services');
       
-      // Find OBD service - look for fff0 first (your device uses this)
       BluetoothService? obdService;
       
       for (var service in services) {
@@ -48,7 +49,7 @@ class GattObdService {
       if (obdService == null) {
         print('[OBD] ❌ No OBD service found, trying first available service');
         if (services.length > 2) {
-          obdService = services[2]; // Skip Generic Access and Generic Attribute
+          obdService = services[2];
         }
       }
       
@@ -60,7 +61,6 @@ class GattObdService {
       print('[OBD] Using service: ${obdService.uuid}');
       print('[OBD] Analyzing characteristics...');
       
-      // Analyze all characteristics
       for (var char in obdService.characteristics) {
         final uuid = char.uuid.toString().toLowerCase();
         print('[OBD] ─────────────────────────────');
@@ -71,23 +71,15 @@ class GattObdService {
         print('[OBD]   Notify: ${char.properties.notify}');
         print('[OBD]   Indicate: ${char.properties.indicate}');
         
-        // For fff0 service (your device):
-        // fff1 = Write + Notify (this is BOTH TX and RX!)
-        // fff2 = Write only
-        
         if (uuid.contains('fff1')) {
-          // This characteristic has BOTH write and notify
-          // Use it for BOTH sending and receiving
           _txCharacteristic = char;
           _rxCharacteristic = char;
           print('[OBD] ✓ Using fff1 for BOTH TX and RX');
         } else if (uuid.contains('fff2') && _txCharacteristic == null) {
-          // Fallback TX only
           _txCharacteristic = char;
           print('[OBD] ✓ Using fff2 for TX');
         }
         
-        // Fallback logic for other devices
         if (_txCharacteristic == null && 
             (char.properties.write || char.properties.writeWithoutResponse)) {
           _txCharacteristic = char;
@@ -112,17 +104,16 @@ class GattObdService {
       print('[OBD]   RX Char: ${_rxCharacteristic?.uuid ?? "NONE (will poll)"}');
       print('[OBD] ═══════════════════════════════');
       
-      // Enable notifications if RX supports it
       if (_rxCharacteristic != null) {
         try {
           if (_rxCharacteristic!.properties.notify || 
               _rxCharacteristic!.properties.indicate) {
             print('[OBD] Enabling notifications...');
             
-            // Subscribe to notifications FIRST
             _notificationSubscription = _rxCharacteristic!.onValueReceived.listen(
               (value) {
                 if (value.isNotEmpty) {
+                  _lastResponseTime = DateTime.now();
                   _handleIncomingData(value);
                 }
               },
@@ -131,10 +122,7 @@ class GattObdService {
               },
             );
             
-            // Then enable notifications
             await _rxCharacteristic!.setNotifyValue(true);
-            
-            // Wait a bit for notification to be enabled
             await Future.delayed(const Duration(milliseconds: 300));
             
             print('[OBD] ✓ Notifications enabled');
@@ -159,44 +147,36 @@ class GattObdService {
     }
   }
 
-  /// Handle incoming data from notifications
   void _handleIncomingData(List<int> data) {
     try {
       _rawBuffer.addAll(data);
       
-      // Print raw hex data
       final hexData = data.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
       print('[OBD] << RAW: $hexData');
       
-      // Try to decode as ASCII
       try {
         final text = utf8.decode(data, allowMalformed: true);
         print('[OBD] << ASCII: $text');
         _buffer += text;
         
-        // Check if we have a complete response
-        // ELM327 responses end with '>' or contain '\r'
-        if (_buffer.contains('>')) {
-          final lines = _buffer.split('>');
-          for (int i = 0; i < lines.length - 1; i++) {
-            final response = lines[i].trim();
-            if (response.isNotEmpty) {
-              print('[OBD] << COMPLETE: $response');
-              _dataController.add(response);
-            }
+        // Check for complete response (ends with '>' or contains specific patterns)
+        if (_buffer.contains('>') || _buffer.contains('OK') || _buffer.contains('ELM')) {
+          final response = _buffer.replaceAll('>', '').trim();
+          if (response.isNotEmpty) {
+            print('[OBD] << COMPLETE: $response');
+            _dataController.add(response);
           }
-          _buffer = lines.last;
-        } else if (_buffer.contains('\r') || _buffer.contains('\n')) {
-          // Alternative: split by line breaks
-          final lines = _buffer.split(RegExp(r'[\r\n]+'));
-          for (int i = 0; i < lines.length - 1; i++) {
-            final response = lines[i].trim();
-            if (response.isNotEmpty && response != '>') {
-              print('[OBD] << COMPLETE: $response');
-              _dataController.add(response);
-            }
+          _buffer = '';
+          _rawBuffer.clear();
+        } else if (_buffer.length > 100) {
+          // Force flush if buffer gets too large
+          final response = _buffer.trim();
+          if (response.isNotEmpty) {
+            print('[OBD] << FORCE FLUSH: $response');
+            _dataController.add(response);
           }
-          _buffer = lines.last;
+          _buffer = '';
+          _rawBuffer.clear();
         }
       } catch (e) {
         print('[OBD] << Decode error: $e');
@@ -206,31 +186,29 @@ class GattObdService {
     }
   }
 
-  /// Send command to OBD adapter
   Future<void> sendCommand(String command) async {
     if (_device == null || _txCharacteristic == null) {
       throw Exception('Not connected to device');
     }
     
     try {
-      // Clear buffers
+      // Clear buffers before sending
       _buffer = '';
       _rawBuffer.clear();
+      _lastResponseTime = null;
       
-      // Prepare command
       String cmd = command.trim();
       if (!cmd.endsWith('\r')) {
         cmd += '\r';
       }
       
       print('[OBD] ═══════════════════════════════');
-      print('[OBD] >> SENDING: $cmd');
+      print('[OBD] >> SENDING: ${cmd.replaceAll('\r', '<CR>')}');
       
       final data = utf8.encode(cmd);
       final hexData = data.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
       print('[OBD] >> HEX: $hexData');
       
-      // Try write WITH response first (more reliable)
       try {
         if (_txCharacteristic!.properties.write) {
           print('[OBD] >> Method: Write with response');
@@ -247,7 +225,6 @@ class GattObdService {
         print('[OBD] ⚠️ First write method failed: $e');
         print('[OBD] >> Trying alternative write method...');
         
-        // Try the opposite method
         try {
           await _txCharacteristic!.write(data, withoutResponse: true);
           print('[OBD] ✓ Sent with alternative method');
@@ -265,52 +242,73 @@ class GattObdService {
     }
   }
 
-  /// Read response from OBD adapter
-  Future<String?> readResponse({Duration timeout = const Duration(seconds: 3)}) async {
+  Future<String?> readResponse({Duration timeout = const Duration(seconds: 2)}) async {
     try {
       print('[OBD] Waiting for response (timeout: ${timeout.inSeconds}s)...');
       final startTime = DateTime.now();
+      String? lastValidResponse;
       
-      // First, wait for notification data
       while (DateTime.now().difference(startTime) < timeout) {
-        // Check if we have data in buffer
-        if (_buffer.isNotEmpty && (_buffer.contains('>') || _buffer.length > 10)) {
+        // Check buffer first
+        if (_buffer.isNotEmpty) {
           final response = _buffer.replaceAll('>', '').trim();
-          _buffer = '';
-          print('[OBD] ✓ Got response from buffer: $response');
-          return response;
+          if (response.isNotEmpty && 
+              !response.contains('SEARCHING') && 
+              response.length > 2) {
+            _buffer = '';
+            _rawBuffer.clear();
+            print('[OBD] ✓ Got response from buffer: $response');
+            return response;
+          }
         }
         
-        // Also check raw buffer
-        if (_rawBuffer.isNotEmpty) {
+        // Check raw buffer
+        if (_rawBuffer.isNotEmpty && _rawBuffer.length > 5) {
           try {
             final text = utf8.decode(_rawBuffer, allowMalformed: true);
-            if (text.isNotEmpty) {
+            final cleaned = text.replaceAll('>', '').replaceAll('\r', '').replaceAll('\n', '').trim();
+            if (cleaned.isNotEmpty && 
+                !cleaned.contains('SEARCHING') && 
+                cleaned.length > 2) {
               _rawBuffer.clear();
-              final response = text.replaceAll('>', '').trim();
-              print('[OBD] ✓ Got response from raw buffer: $response');
-              return response;
+              _buffer = '';
+              print('[OBD] ✓ Got response from raw buffer: $cleaned');
+              return cleaned;
             }
           } catch (e) {
             print('[OBD] Raw buffer decode error: $e');
           }
         }
         
-        await Future.delayed(const Duration(milliseconds: 100));
+        // Try direct read as last resort
+        if (DateTime.now().difference(startTime).inMilliseconds > timeout.inMilliseconds ~/ 2) {
+          if (_rxCharacteristic != null && _rxCharacteristic!.properties.read) {
+            try {
+              final value = await _rxCharacteristic!.read();
+              if (value.isNotEmpty) {
+                final text = utf8.decode(value, allowMalformed: true).trim();
+                final cleaned = text.replaceAll('>', '').replaceAll('\r', '').replaceAll('\n', '').trim();
+                if (cleaned.isNotEmpty && !cleaned.contains('SEARCHING')) {
+                  print('[OBD] ✓ Got response from direct read: $cleaned');
+                  return cleaned;
+                }
+              }
+            } catch (e) {
+              // Ignore read errors
+            }
+          }
+        }
+        
+        await Future.delayed(const Duration(milliseconds: 50));
       }
       
-      // Try direct read if characteristic supports it
-      if (_rxCharacteristic != null && _rxCharacteristic!.properties.read) {
-        print('[OBD] Attempting direct read...');
-        try {
-          final value = await _rxCharacteristic!.read();
-          if (value.isNotEmpty) {
-            final text = utf8.decode(value, allowMalformed: true).trim();
-            print('[OBD] ✓ Got response from direct read: $text');
-            return text;
-          }
-        } catch (e) {
-          print('[OBD] Direct read error: $e');
+      // If we got any partial response, return it
+      if (_buffer.isNotEmpty) {
+        final response = _buffer.replaceAll('>', '').trim();
+        _buffer = '';
+        if (response.isNotEmpty) {
+          print('[OBD] ⚠️ Timeout but got partial: $response');
+          return response;
         }
       }
       
@@ -323,11 +321,11 @@ class GattObdService {
     }
   }
 
-  /// Disconnect from device
   Future<void> disconnect() async {
     try {
       print('[OBD] Disconnecting...');
       
+      _timeoutTimer?.cancel();
       await _notificationSubscription?.cancel();
       _notificationSubscription = null;
       
@@ -355,6 +353,7 @@ class GattObdService {
   }
 
   void dispose() {
+    _timeoutTimer?.cancel();
     _notificationSubscription?.cancel();
     _dataController.close();
   }
