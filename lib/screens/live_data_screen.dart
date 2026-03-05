@@ -26,7 +26,7 @@ class _LiveDataScreenState extends State<LiveDataScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Live Data Monitor'),
-        backgroundColor: Colors.blue.shade700,
+        backgroundColor: Colors.black87,
         foregroundColor: Colors.white,
       ),
       body: Column(

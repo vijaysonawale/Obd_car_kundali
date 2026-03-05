@@ -9,7 +9,7 @@ import 'package:flutter/foundation.dart';
 //    Get IDs from: apps.admob.com → Apps → Add App → Get Ad Unit
 // ─────────────────────────────────────────────────────────────────
 class AdIds {
-  static const bool _useTestIds = true; // ← Set false when publishing
+  static const bool _useTestIds = false; // ← Set false when publishing
 
   // APP ID  → goes in AndroidManifest.xml  (not here)
   // For testing app id: ca-app-pub-3940256099942544~3347511713
