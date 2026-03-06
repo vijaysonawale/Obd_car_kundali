@@ -6,7 +6,6 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
-import 'package:fl_chart/fl_chart.dart';
 import '../services/gatt_obd_service.dart';
 import '../services/data_logger.dart';
 import '../services/ad_manager.dart';
@@ -18,7 +17,6 @@ import 'dashboard_screen.dart';
 import 'health_screen.dart';
 import 'trip_screen.dart';
 import 'performance_screen.dart';
-import 'freeze_frame_screen.dart';
 import 'live_data_screen.dart';
 
 class HomeScreen extends StatefulWidget {
