@@ -2,6 +2,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:path_provider/path_provider.dart';
@@ -18,6 +19,7 @@ import 'health_screen.dart';
 import 'trip_screen.dart';
 import 'performance_screen.dart';
 import 'live_data_screen.dart';
+import '../widgets/exit_dialog.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -797,65 +799,76 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   Widget build(BuildContext context) {
     final conn = connected != null;
-    return Scaffold(
-      backgroundColor: Colors.grey.shade100,
-      appBar: AppBar(
-        title: Row(
-          children: [
-            const Icon(Icons.directions_car, color: Colors.white),
-            const SizedBox(width: 8),
-            const Text('Car Kundali Pro'),
-            if (_isLogging) ...[const SizedBox(width: 8), _blinkDot()],
+    return PopScope(
+      canPop: false,                     // ← intercept back button
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop) return;
+        final shouldExit = await ExitDialog.show(context);
+        if (shouldExit && context.mounted) {
+          SystemNavigator.pop();         // exits app cleanly on Android
+        }
+      },
+
+      child: Scaffold(
+        backgroundColor: Colors.grey.shade100,
+        appBar: AppBar(
+          title: Row(
+            children: [
+              const Icon(Icons.directions_car, color: Colors.white),
+              const SizedBox(width: 8),
+              const Text('Car Kundali Pro'),
+              if (_isLogging) ...[const SizedBox(width: 8), _blinkDot()],
+            ],
+          ),
+          backgroundColor: Colors.black87,
+          foregroundColor: Colors.white,
+          elevation: 0,
+          actions: [
+            if (conn)
+              IconButton(
+                onPressed: toggleLogging,
+                icon: Icon(
+                  _isLogging ? Icons.stop_circle : Icons.fiber_manual_record,
+                ),
+                color: _isLogging ? Colors.red.shade300 : Colors.white,
+              ),
+            IconButton(
+              onPressed: () {
+                _maybeShowInterstitial();
+                exportLogs();
+              },
+              icon: const Icon(Icons.download),
+            ),
           ],
         ),
-        backgroundColor: Colors.black87,
-        foregroundColor: Colors.white,
-        elevation: 0,
-        actions: [
-          if (conn)
-            IconButton(
-              onPressed: toggleLogging,
-              icon: Icon(
-                _isLogging ? Icons.stop_circle : Icons.fiber_manual_record,
-              ),
-              color: _isLogging ? Colors.red.shade300 : Colors.white,
-            ),
-          IconButton(
-            onPressed: () {
-              _maybeShowInterstitial();
-              exportLogs();
-            },
-            icon: const Icon(Icons.download),
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          _buildStatusBar(conn),
-          const BannerAdWidget(), // ← banner always
-          _buildMetricsRow(conn), // ← always, 0 when not connected
-          _buildFeatureGrid(), // ← always
-          _buildActionButtons(conn), // ← always
-          Expanded(
-            child: Column(
-              children: [
-                _buildTabBar(),
-                Expanded(
-                  child: TabBarView(
-                    controller: _tabs,
-                    children: [
-                      _devicesTab(),
-                      _liveDataTab(conn),
-                      _readinessTab(conn),
-                      _logsTab(),
-                      _commandsTab(conn),
-                    ],
+        body: Column(
+          children: [
+            _buildStatusBar(conn),
+            const BannerAdWidget(), // ← banner always
+            _buildMetricsRow(conn), // ← always, 0 when not connected
+            _buildFeatureGrid(), // ← always
+            _buildActionButtons(conn), // ← always
+            Expanded(
+              child: Column(
+                children: [
+                  _buildTabBar(),
+                  Expanded(
+                    child: TabBarView(
+                      controller: _tabs,
+                      children: [
+                        _devicesTab(),
+                        _liveDataTab(conn),
+                        _readinessTab(conn),
+                        _logsTab(),
+                        _commandsTab(conn),
+                      ],
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
