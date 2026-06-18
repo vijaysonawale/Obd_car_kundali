@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:in_app_review/in_app_review.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
@@ -19,7 +20,9 @@ import 'health_screen.dart';
 import 'trip_screen.dart';
 import 'performance_screen.dart';
 import 'live_data_screen.dart';
+import 'dtc_screen.dart';
 import '../widgets/exit_dialog.dart';
+import '../theme/app_theme.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -29,6 +32,8 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen>
     with WidgetsBindingObserver, SingleTickerProviderStateMixin {
+  static const _playStoreUrl =
+      'https://play.google.com/store/apps/details?id=com.nextintinc.car_kundali';
   final GattObdService _obd = GattObdService();
   final DataLogger _dataLogger = DataLogger();
 
@@ -53,6 +58,7 @@ class _HomeScreenState extends State<HomeScreen>
   // ─── VEHICLE STATE ────────────────────────────────────
   List<ReadinessMonitor> _readinessMonitors = _defaultReadiness();
   List<DtcModel> _dtcList = [];
+  final ValueNotifier<List<DtcModel>> _dtcNotifier = ValueNotifier([]);
   VehicleInfo? _vehicleInfo;
 
   // ─── LOGS ─────────────────────────────────────────────
@@ -61,6 +67,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   // ─── UI ───────────────────────────────────────────────
   late final TabController _tabs;
+  int _navIndex = 0;
   Timer? _autoRefreshTimer;
   final TextEditingController _commandController = TextEditingController();
   String _commandResponse = '';
@@ -114,7 +121,8 @@ class _HomeScreenState extends State<HomeScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _tabs = TabController(length: 5, vsync: this);
+    _tabs = TabController(length: 4, vsync: this);
+    _tabs.addListener(_syncNavIndex);
     _initializeBluetooth();
     _logLocal('Car Kundali Pro started');
   }
@@ -126,9 +134,11 @@ class _HomeScreenState extends State<HomeScreen>
     _adapterSub?.cancel();
     _obdDataSub?.cancel();
     _autoRefreshTimer?.cancel();
+    _tabs.removeListener(_syncNavIndex);
     _tabs.dispose();
     _commandController.dispose();
     _valuesNotifier.dispose();
+    _dtcNotifier.dispose();
     _obd.dispose();
     super.dispose();
   }
@@ -151,6 +161,73 @@ class _HomeScreenState extends State<HomeScreen>
       AdManager.instance.showInterstitial();
       _lastInterstitialTime = now;
     }
+  }
+
+  void _syncNavIndex() {
+    if (!mounted || _navIndex == _tabs.index) return;
+    setState(() => _navIndex = _tabs.index);
+  }
+
+  void _selectNav(int index) {
+    _maybeShowInterstitial();
+    setState(() => _navIndex = index);
+    _tabs.animateTo(index);
+  }
+
+  void _showDeviceSheet() {
+    _maybeShowInterstitial();
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: AppColors.panel,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (_) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.72,
+        minChildSize: 0.42,
+        maxChildSize: 0.92,
+        builder: (context, controller) {
+          return Column(
+            children: [
+              Container(
+                width: 42,
+                height: 4,
+                margin: const EdgeInsets.only(top: 10, bottom: 8),
+                decoration: BoxDecoration(
+                  color: AppColors.line,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 8, 8),
+                child: Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'Connect OBD adapter',
+                        style: TextStyle(
+                          color: AppColors.text,
+                          fontSize: 18,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(child: _devicesTab(controller: controller)),
+            ],
+          );
+        },
+      ),
+    );
   }
 
   void _navigate(Widget screen) {
@@ -538,7 +615,7 @@ class _HomeScreenState extends State<HomeScreen>
   // ══════════════════════════════════════════════════════
   // DTC
   // ══════════════════════════════════════════════════════
-  Future<void> scanDTC() async {
+  Future<void> scanDTC({bool showResultDialog = true}) async {
     _maybeShowInterstitial();
     if (connected == null) {
       _noConnSnack();
@@ -574,11 +651,12 @@ class _HomeScreenState extends State<HomeScreen>
       }
     }
     setState(() => _dtcList = dtcs);
+    _dtcNotifier.value = List.unmodifiable(dtcs);
     appendLog('Found ${dtcs.length} DTC(s)');
     if (!mounted) return;
-    if (dtcs.isNotEmpty) {
+    if (dtcs.isNotEmpty && showResultDialog) {
       _showDtcDialog(dtcs);
-    } else {
+    } else if (dtcs.isEmpty && showResultDialog) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('✅ No trouble codes!'),
@@ -588,7 +666,7 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
-  Future<void> clearDTC() async {
+  Future<void> clearDTC({bool rescanAfterClear = true}) async {
     _maybeShowInterstitial();
     if (connected == null) {
       _noConnSnack();
@@ -602,7 +680,8 @@ class _HomeScreenState extends State<HomeScreen>
       _dtcList = [];
       _alertsSent.clear();
     });
-    await scanDTC();
+    _dtcNotifier.value = const [];
+    if (rescanAfterClear) await scanDTC(showResultDialog: false);
   }
 
   void _showDtcDialog(List<DtcModel> dtcs) {
@@ -786,6 +865,29 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
+  Future<void> shareApp() async {
+    _maybeShowInterstitial();
+    await Share.share(
+      'Try Car Kundali Pro for OBD diagnostics, live car data, DTC scan/clear, trip stats, and vehicle health checks.\n\nDownload it here:\n$_playStoreUrl',
+      subject: 'Car Kundali Pro - OBD diagnostics app',
+    );
+  }
+
+  Future<void> requestReview() async {
+    _maybeShowInterstitial();
+    try {
+      final review = InAppReview.instance;
+      if (await review.isAvailable()) {
+        await review.requestReview();
+      } else {
+        await review.openStoreListing();
+      }
+    } catch (e) {
+      appendLog('Review failed: $e');
+      await Share.share(_playStoreUrl);
+    }
+  }
+
   void _noConnSnack() => ScaffoldMessenger.of(context).showSnackBar(
     const SnackBar(
       content: Text('⚠️ Connect OBD first — Devices tab'),
@@ -800,28 +902,29 @@ class _HomeScreenState extends State<HomeScreen>
   Widget build(BuildContext context) {
     final conn = connected != null;
     return PopScope(
-      canPop: false,                     // ← intercept back button
+      canPop: false, // ← intercept back button
       onPopInvokedWithResult: (didPop, _) async {
         if (didPop) return;
         final shouldExit = await ExitDialog.show(context);
         if (shouldExit && context.mounted) {
-          SystemNavigator.pop();         // exits app cleanly on Android
+          SystemNavigator.pop(); // exits app cleanly on Android
         }
       },
 
       child: Scaffold(
-        backgroundColor: Colors.grey.shade100,
+        backgroundColor: AppColors.ink,
         appBar: AppBar(
+          backgroundColor: AppColors.ink,
+          surfaceTintColor: Colors.transparent,
           title: Row(
             children: [
-              const Icon(Icons.directions_car, color: Colors.white),
+              const Icon(Icons.directions_car, color: AppColors.blue),
               const SizedBox(width: 8),
-              const Text('Car Kundali Pro'),
+              const Text('Car Kundali'),
               if (_isLogging) ...[const SizedBox(width: 8), _blinkDot()],
             ],
           ),
-          backgroundColor: Colors.black87,
-          foregroundColor: Colors.white,
+          foregroundColor: AppColors.text,
           elevation: 0,
           actions: [
             if (conn)
@@ -830,46 +933,458 @@ class _HomeScreenState extends State<HomeScreen>
                 icon: Icon(
                   _isLogging ? Icons.stop_circle : Icons.fiber_manual_record,
                 ),
-                color: _isLogging ? Colors.red.shade300 : Colors.white,
+                color: _isLogging ? AppColors.red : AppColors.text,
               ),
-            IconButton(
-              onPressed: () {
-                _maybeShowInterstitial();
-                exportLogs();
-              },
-              icon: const Icon(Icons.download),
-            ),
           ],
         ),
         body: Column(
           children: [
-            _buildStatusBar(conn),
             const BannerAdWidget(), // ← banner always
-            _buildMetricsRow(conn), // ← always, 0 when not connected
-            _buildFeatureGrid(), // ← always
-            _buildActionButtons(conn), // ← always
             Expanded(
-              child: Column(
+              child: TabBarView(
+                controller: _tabs,
                 children: [
-                  _buildTabBar(),
-                  Expanded(
-                    child: TabBarView(
-                      controller: _tabs,
-                      children: [
-                        _devicesTab(),
-                        _liveDataTab(conn),
-                        _readinessTab(conn),
-                        _logsTab(),
-                        _commandsTab(conn),
-                      ],
-                    ),
-                  ),
+                  _overviewTab(conn),
+                  _dtcTab(conn),
+                  _liveDataTab(conn),
+                  _moreTab(conn),
                 ],
               ),
             ),
           ],
         ),
+        bottomNavigationBar: NavigationBar(
+          selectedIndex: _navIndex,
+          onDestinationSelected: _selectNav,
+          height: 72,
+          backgroundColor: AppColors.panel,
+          indicatorColor: AppColors.blue.withOpacity(0.16),
+          destinations: const [
+            NavigationDestination(
+              icon: Icon(Icons.home_outlined),
+              selectedIcon: Icon(Icons.home),
+              label: 'Home',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.car_repair_outlined),
+              selectedIcon: Icon(Icons.car_repair),
+              label: 'DTC',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.monitor_heart_outlined),
+              selectedIcon: Icon(Icons.monitor_heart),
+              label: 'Live',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.more_horiz),
+              selectedIcon: Icon(Icons.more_horiz),
+              label: 'More',
+            ),
+          ],
+        ),
       ),
+    );
+  }
+
+  Widget _overviewTab(bool conn) {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 24),
+      children: [
+        _homeSummary(conn),
+        const SizedBox(height: 10),
+        _primaryActions(conn),
+        const SizedBox(height: 10),
+        _sectionTitle('Live essentials'),
+        const SizedBox(height: 10),
+        _wideMetricGrid(conn),
+        const SizedBox(height: 10),
+        _readinessCompact(conn),
+      ],
+    );
+  }
+
+  Widget _homeSummary(bool conn) {
+    final codeCount = _dtcList.length;
+    final hasCodes = codeCount > 0;
+    final color = !conn
+        ? AppColors.blue
+        : hasCodes
+        ? AppColors.red
+        : AppColors.green;
+
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: AppColors.panel,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppColors.line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 46,
+                height: 46,
+                decoration: BoxDecoration(
+                  color: color.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(
+                  !conn
+                      ? Icons.bluetooth_searching
+                      : hasCodes
+                      ? Icons.warning_amber
+                      : Icons.verified_outlined,
+                  color: color,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      !conn
+                          ? 'Ready to connect'
+                          : hasCodes
+                          ? 'DTC found'
+                          : 'Vehicle looks okay',
+                      style: const TextStyle(
+                        color: AppColors.text,
+                        fontSize: 20,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      conn
+                          ? codeCount == 0
+                                ? 'Connected. No stored DTCs in current scan.'
+                                : '$codeCount trouble code${codeCount == 1 ? '' : 's'} found.'
+                          : 'Connect your OBD adapter to start scanning.',
+                      style: const TextStyle(color: AppColors.muted),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          Row(
+            children: [
+              Expanded(
+                child: _summaryMetric(
+                  'RPM',
+                  conn ? _val('010C').toStringAsFixed(0) : '--',
+                  'rpm',
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _summaryMetric(
+                  'Speed',
+                  conn ? _val('010D').toStringAsFixed(0) : '--',
+                  'km/h',
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _summaryMetric(String label, String value, String unit) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.panelSoft,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(color: AppColors.muted, fontSize: 12),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            value,
+            style: const TextStyle(
+              color: AppColors.text,
+              fontSize: 28,
+              fontWeight: FontWeight.w900,
+              fontFamily: 'monospace',
+            ),
+          ),
+          Text(
+            unit,
+            style: const TextStyle(color: AppColors.muted, fontSize: 11),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _sectionTitle(String text) {
+    return Text(
+      text,
+      style: const TextStyle(
+        color: AppColors.text,
+        fontSize: 16,
+        fontWeight: FontWeight.w900,
+      ),
+    );
+  }
+
+  Widget _cockpitReadouts(bool conn) {
+    return Row(
+      children: [
+        Expanded(
+          child: _bigReadout(
+            label: 'Engine',
+            value: _val('010C').toStringAsFixed(0),
+            unit: 'rpm',
+            icon: Icons.settings_input_component,
+            color: AppColors.blue,
+            live: conn,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: _bigReadout(
+            label: 'Speed',
+            value: _val('010D').toStringAsFixed(0),
+            unit: 'km/h',
+            icon: Icons.speed,
+            color: AppColors.green,
+            live: conn,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _bigReadout({
+    required String label,
+    required String value,
+    required String unit,
+    required IconData icon,
+    required Color color,
+    required bool live,
+  }) {
+    return Container(
+      height: 172,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.panel,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: live ? color.withOpacity(0.44) : AppColors.line,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, color: live ? color : AppColors.muted, size: 22),
+              const Spacer(),
+              Container(
+                width: 8,
+                height: 8,
+                decoration: BoxDecoration(
+                  color: live ? AppColors.green : AppColors.muted,
+                  shape: BoxShape.circle,
+                ),
+              ),
+            ],
+          ),
+          const Spacer(),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(
+              live ? value : '--',
+              style: TextStyle(
+                color: live ? AppColors.text : AppColors.muted,
+                fontSize: 54,
+                fontWeight: FontWeight.w900,
+                fontFamily: 'monospace',
+              ),
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            '$label  /  $unit',
+            style: const TextStyle(
+              color: AppColors.muted,
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _primaryActions(bool conn) {
+    return Row(
+      children: [
+        Expanded(
+          child: _overviewAction(
+            icon: conn ? Icons.manage_search : Icons.bluetooth_searching,
+            label: conn ? 'Scan DTC' : 'Connect device',
+            color: conn ? AppColors.red : AppColors.blue,
+            onTap: conn
+                ? () => scanDTC(showResultDialog: false)
+                : _showDeviceSheet,
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: _overviewAction(
+            icon: _isLogging
+                ? Icons.stop_circle_outlined
+                : Icons.radio_button_checked,
+            label: _isLogging ? 'Stop Log' : 'Start Log',
+            color: _isLogging ? AppColors.red : AppColors.green,
+            onTap: conn ? toggleLogging : _noConnSnack,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _readinessCompact(bool conn) {
+    final supported = _readinessMonitors.where((m) => m.isSupported).length;
+    final ready = _readinessMonitors
+        .where((m) => m.isSupported && m.isComplete)
+        .length;
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.panel,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppColors.line),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            conn ? Icons.verified_outlined : Icons.link_off,
+            color: conn ? AppColors.green : AppColors.muted,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              conn
+                  ? 'Readiness monitors: $ready/$supported ready'
+                  : 'Readiness available after connection',
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _overviewAction({
+    required IconData icon,
+    required String label,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: AppColors.panel,
+      borderRadius: BorderRadius.circular(8),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          height: 58,
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: color.withOpacity(0.34)),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, color: color, size: 20),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  label,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: color,
+                    fontWeight: FontWeight.w900,
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _wideMetricGrid(bool conn) {
+    final metrics = [
+      (
+        'Coolant',
+        _val('0105').toStringAsFixed(0),
+        'C',
+        _val('0105') > 100 ? AppColors.red : AppColors.amber,
+      ),
+      ('Load', _val('0104').toStringAsFixed(0), '%', AppColors.blue),
+      ('MAF', _val('0110').toStringAsFixed(1), 'g/s', AppColors.green),
+      ('Voltage', _val('0142').toStringAsFixed(1), 'V', AppColors.amber),
+    ];
+
+    return GridView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      itemCount: metrics.length,
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 2,
+        mainAxisSpacing: 10,
+        crossAxisSpacing: 10,
+        childAspectRatio: 2.4,
+      ),
+      itemBuilder: (context, index) {
+        final item = metrics[index];
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            color: AppColors.panelSoft,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: AppColors.line),
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  item.$1,
+                  style: const TextStyle(color: AppColors.muted, fontSize: 12),
+                ),
+              ),
+              Text(
+                conn ? '${item.$2} ${item.$3}' : '--',
+                style: TextStyle(
+                  color: conn ? item.$4 : AppColors.muted,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -891,7 +1406,7 @@ class _HomeScreenState extends State<HomeScreen>
     return GestureDetector(
       onTap: () {
         _maybeShowInterstitial();
-        conn ? disconnectDevice() : _tabs.animateTo(0);
+        conn ? disconnectDevice() : _showDeviceSheet();
       },
       child: Container(
         margin: const EdgeInsets.fromLTRB(12, 10, 12, 0),
@@ -899,19 +1414,13 @@ class _HomeScreenState extends State<HomeScreen>
         decoration: BoxDecoration(
           gradient: LinearGradient(
             colors: conn
-                ? [Colors.green.shade600, Colors.green.shade400]
-                : [Colors.grey.shade600, Colors.grey.shade500],
+                ? [AppColors.green, const Color(0xFF159B76)]
+                : [AppColors.panelSoft, AppColors.panel],
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
           ),
-          borderRadius: BorderRadius.circular(14),
-          boxShadow: [
-            BoxShadow(
-              color: (conn ? Colors.green : Colors.grey).withOpacity(0.3),
-              blurRadius: 8,
-              offset: const Offset(0, 3),
-            ),
-          ],
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: conn ? AppColors.green : AppColors.line),
         ),
         child: Row(
           children: [
@@ -1054,17 +1563,13 @@ class _HomeScreenState extends State<HomeScreen>
         decoration: BoxDecoration(
           gradient: LinearGradient(
             colors: live
-                ? [color.withOpacity(0.9), color.withOpacity(0.7)]
-                : [Colors.grey.shade400, Colors.grey.shade500],
+                ? [color.withOpacity(0.86), color.withOpacity(0.58)]
+                : [AppColors.panelSoft, AppColors.panel],
           ),
-          borderRadius: BorderRadius.circular(11),
-          boxShadow: [
-            BoxShadow(
-              color: color.withOpacity(live ? 0.25 : 0.08),
-              blurRadius: 5,
-              offset: const Offset(0, 2),
-            ),
-          ],
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: live ? color.withOpacity(0.3) : AppColors.line,
+          ),
         ),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -1081,7 +1586,7 @@ class _HomeScreenState extends State<HomeScreen>
             Text(
               label,
               style: TextStyle(
-                color: Colors.white.withOpacity(0.8),
+                color: Colors.white.withOpacity(0.78),
                 fontSize: 9,
               ),
             ),
@@ -1100,24 +1605,40 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   // ── FEATURE GRID — always visible, taps = ad + navigate ─
-  Widget _buildFeatureGrid() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-      child: Row(
+  Widget _buildFeatureGrid(bool conn) {
+    return SizedBox(
+      height: 86,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
         children: [
           _fCard(
-            '🎛',
+            Icons.speed,
             'Dashboard',
             'Gauges',
-            Colors.blue,
+            AppColors.blue,
             () => _navigate(DashboardScreen(valuesNotifier: _valuesNotifier)),
           ),
-          const SizedBox(width: 8),
           _fCard(
-            '❤️',
+            Icons.car_repair,
+            'DTC',
+            _dtcList.isEmpty ? 'Scan ECU' : '${_dtcList.length} codes',
+            _dtcList.isEmpty ? AppColors.green : AppColors.red,
+            () => _navigate(
+              DtcScreen(
+                dtcNotifier: _dtcNotifier,
+                liveValues: _currentValues,
+                isConnected: conn,
+                onScan: () => scanDTC(showResultDialog: false),
+                onClear: () => clearDTC(rescanAfterClear: true),
+              ),
+            ),
+          ),
+          _fCard(
+            Icons.health_and_safety_outlined,
             'Health',
             _dtcList.isEmpty ? 'All OK' : '${_dtcList.length} codes',
-            Colors.green,
+            AppColors.green,
             () => _navigate(
               HealthScreen(
                 dtcList: _dtcList,
@@ -1126,20 +1647,18 @@ class _HomeScreenState extends State<HomeScreen>
               ),
             ),
           ),
-          const SizedBox(width: 8),
           _fCard(
-            '🗺',
+            Icons.route_outlined,
             'Trip',
             '${_tripDistanceKm.toStringAsFixed(1)} km',
-            Colors.orange,
+            AppColors.amber,
             () => _navigate(TripScreen(tripData: _tripData)),
           ),
-          const SizedBox(width: 8),
           _fCard(
-            '⚡',
+            Icons.bolt,
             'Perf',
             '0-100',
-            Colors.red,
+            AppColors.red,
             () => _navigate(PerformanceScreen(valuesNotifier: _valuesNotifier)),
           ),
         ],
@@ -1148,54 +1667,47 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   Widget _fCard(
-    String emoji,
+    IconData icon,
     String title,
     String sub,
     Color color,
     VoidCallback onTap,
   ) {
-    return Expanded(
-      child: GestureDetector(
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 4),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.06),
-                blurRadius: 6,
-                offset: const Offset(0, 2),
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 112,
+        margin: const EdgeInsets.only(right: 8),
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 10),
+        decoration: BoxDecoration(
+          color: AppColors.panel,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: color.withOpacity(0.35)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, color: color, size: 20),
+            const Spacer(),
+            Text(
+              title,
+              style: const TextStyle(
+                color: AppColors.text,
+                fontSize: 12,
+                fontWeight: FontWeight.w900,
               ),
-            ],
-            border: Border.all(color: color.withOpacity(0.2)),
-          ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(emoji, style: const TextStyle(fontSize: 18)),
-              const SizedBox(height: 2),
-              Text(
-                title,
-                style: const TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.bold,
-                ),
-                textAlign: TextAlign.center,
+              overflow: TextOverflow.ellipsis,
+            ),
+            Text(
+              sub,
+              style: TextStyle(
+                fontSize: 10,
+                color: color,
+                fontWeight: FontWeight.w700,
               ),
-              Text(
-                sub,
-                style: TextStyle(
-                  fontSize: 9,
-                  color: color,
-                  fontWeight: FontWeight.w500,
-                ),
-                textAlign: TextAlign.center,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ],
-          ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
         ),
       ),
     );
@@ -1216,11 +1728,11 @@ class _HomeScreenState extends State<HomeScreen>
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
               ),
               style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.red.shade600,
+                backgroundColor: AppColors.red,
                 foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(vertical: 12),
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
+                  borderRadius: BorderRadius.circular(8),
                 ),
               ),
             ),
@@ -1235,11 +1747,11 @@ class _HomeScreenState extends State<HomeScreen>
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
               ),
               style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.orange.shade600,
+                backgroundColor: AppColors.amber,
                 foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(vertical: 12),
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
+                  borderRadius: BorderRadius.circular(8),
                 ),
               ),
             ),
@@ -1251,11 +1763,12 @@ class _HomeScreenState extends State<HomeScreen>
               _resetTrip();
             },
             style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.blue.shade600,
+              backgroundColor: AppColors.panelSoft,
               foregroundColor: Colors.white,
               padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 12),
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
+                borderRadius: BorderRadius.circular(8),
+                side: const BorderSide(color: AppColors.line),
               ),
             ),
             child: const Icon(Icons.restart_alt, size: 18),
@@ -1270,22 +1783,21 @@ class _HomeScreenState extends State<HomeScreen>
     return Container(
       margin: const EdgeInsets.fromLTRB(12, 5, 12, 0),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(14)),
-        boxShadow: [
-          BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 6),
-        ],
+        color: AppColors.panel,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(8)),
+        border: Border.all(color: AppColors.line),
       ),
       child: TabBar(
         controller: _tabs,
-        labelColor: Colors.blue.shade700,
-        unselectedLabelColor: Colors.grey.shade500,
-        indicatorColor: Colors.blue.shade700,
+        labelColor: AppColors.blue,
+        unselectedLabelColor: AppColors.muted,
+        indicatorColor: AppColors.blue,
         indicatorWeight: 3,
         labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 10),
         onTap: (_) => _maybeShowInterstitial(), // ← ad on tab switch
         tabs: const [
           Tab(icon: Icon(Icons.bluetooth, size: 18), text: 'Devices'),
+          Tab(icon: Icon(Icons.car_repair, size: 18), text: 'DTC'),
           Tab(icon: Icon(Icons.show_chart, size: 18), text: 'Live'),
           Tab(icon: Icon(Icons.verified, size: 18), text: 'Ready'),
           Tab(icon: Icon(Icons.article, size: 18), text: 'Logs'),
@@ -1298,8 +1810,9 @@ class _HomeScreenState extends State<HomeScreen>
   // ══════════════════════════════════════════════════════
   // DEVICES TAB
   // ══════════════════════════════════════════════════════
-  Widget _devicesTab() {
+  Widget _devicesTab({ScrollController? controller}) {
     return ListView(
+      controller: controller,
       padding: const EdgeInsets.all(14),
       children: [
         SizedBox(
@@ -1428,6 +1941,111 @@ class _HomeScreenState extends State<HomeScreen>
           );
         }).toList(),
       ],
+    );
+  }
+
+  Widget _dtcTab(bool conn) {
+    return DtcScreen(
+      dtcNotifier: _dtcNotifier,
+      liveValues: _currentValues,
+      isConnected: conn,
+      onScan: () => scanDTC(showResultDialog: false),
+      onClear: () => clearDTC(rescanAfterClear: true),
+      showAppBar: false,
+    );
+  }
+
+  Widget _moreTab(bool conn) {
+    return DefaultTabController(
+      length: 3,
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+            child: Row(
+              children: [
+                Expanded(
+                  child: _utilityTile(
+                    icon: Icons.ios_share,
+                    label: 'Share App',
+                    onTap: shareApp,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _utilityTile(
+                    icon: Icons.star_rate,
+                    label: 'Rate App',
+                    onTap: requestReview,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Container(
+            margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+            decoration: BoxDecoration(
+              color: AppColors.panel,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppColors.line),
+            ),
+            child: const TabBar(
+              labelColor: AppColors.blue,
+              unselectedLabelColor: AppColors.muted,
+              indicatorColor: AppColors.blue,
+              tabs: [
+                Tab(icon: Icon(Icons.verified_outlined), text: 'Ready'),
+                Tab(icon: Icon(Icons.article_outlined), text: 'Logs'),
+                Tab(icon: Icon(Icons.terminal), text: 'Terminal'),
+              ],
+            ),
+          ),
+          Expanded(
+            child: TabBarView(
+              children: [_readinessTab(conn), _logsTab(), _commandsTab(conn)],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _utilityTile({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: AppColors.panel,
+      borderRadius: BorderRadius.circular(8),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          height: 50,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: AppColors.line),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, color: AppColors.blue, size: 19),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  label,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppColors.text,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -1651,11 +2269,11 @@ class _HomeScreenState extends State<HomeScreen>
     return Column(
       children: [
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          color: Colors.grey.shade50,
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          color: AppColors.panel,
           child: Row(
             children: [
-              Icon(Icons.article, color: Colors.blue.shade700),
+              const Icon(Icons.article, color: AppColors.blue),
               const SizedBox(width: 10),
               const Expanded(
                 child: Text(
@@ -1671,7 +2289,7 @@ class _HomeScreenState extends State<HomeScreen>
                 icon: const Icon(Icons.download, size: 15),
                 label: const Text('Export'),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.blue.shade700,
+                  backgroundColor: AppColors.blue,
                   foregroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(
                     horizontal: 12,
@@ -1687,17 +2305,27 @@ class _HomeScreenState extends State<HomeScreen>
         ),
         Expanded(
           child: Container(
-            color: const Color(0xFF1E1E1E),
-            padding: const EdgeInsets.all(12),
+            width: double.infinity,
+            color: AppColors.panel,
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
             child: SingleChildScrollView(
               reverse: true,
-              child: SelectableText(
-                logText.isEmpty ? '// Logs appear here...' : logText,
-                style: const TextStyle(
-                  fontFamily: 'monospace',
-                  color: Color(0xFF4EC9B0),
-                  fontSize: 12,
-                  height: 1.5,
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF0B1220),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFF1F2937)),
+                ),
+                child: SelectableText(
+                  logText.isEmpty ? '// Logs appear here...' : logText,
+                  style: const TextStyle(
+                    fontFamily: 'monospace',
+                    color: Color(0xFF7DD3FC),
+                    fontSize: 12,
+                    height: 1.45,
+                  ),
                 ),
               ),
             ),
@@ -1713,8 +2341,10 @@ class _HomeScreenState extends State<HomeScreen>
   Widget _commandsTab(bool conn) {
     return Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.all(12),
+        Container(
+          width: double.infinity,
+          color: AppColors.panel,
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
           child: Row(
             children: [
               Expanded(
@@ -1730,8 +2360,6 @@ class _HomeScreenState extends State<HomeScreen>
                       vertical: 12,
                     ),
                     prefixIcon: const Icon(Icons.terminal),
-                    filled: true,
-                    fillColor: Colors.white,
                   ),
                   textCapitalization: TextCapitalization.characters,
                   style: const TextStyle(fontFamily: 'monospace'),
@@ -1758,7 +2386,7 @@ class _HomeScreenState extends State<HomeScreen>
                   appendLog('<< $_commandResponse');
                 },
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: conn ? Colors.blue.shade700 : Colors.grey,
+                  backgroundColor: conn ? AppColors.blue : AppColors.muted,
                   foregroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(
                     horizontal: 18,
@@ -1778,32 +2406,41 @@ class _HomeScreenState extends State<HomeScreen>
         ),
         Expanded(
           child: Container(
-            margin: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: const Color(0xFF1E1E1E),
-              borderRadius: BorderRadius.circular(10),
-            ),
+            width: double.infinity,
+            color: AppColors.panel,
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
             child: SingleChildScrollView(
-              child: SelectableText(
-                _commandResponse.isEmpty
-                    ? '// Response here...'
-                    : _commandResponse,
-                style: const TextStyle(
-                  fontFamily: 'monospace',
-                  color: Color(0xFF4EC9B0),
-                  fontSize: 13,
-                  height: 1.5,
+              child: Container(
+                width: double.infinity,
+                constraints: const BoxConstraints(minHeight: 220),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF0B1220),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFF1F2937)),
+                ),
+                child: SelectableText(
+                  _commandResponse.isEmpty
+                      ? '// Response will appear here...'
+                      : _commandResponse,
+                  style: const TextStyle(
+                    fontFamily: 'monospace',
+                    color: Color(0xFF86EFAC),
+                    fontSize: 13,
+                    height: 1.45,
+                  ),
                 ),
               ),
             ),
           ),
         ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+        Container(
+          width: double.infinity,
+          color: AppColors.panel,
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
           child: Wrap(
-            spacing: 6,
-            runSpacing: 6,
+            spacing: 8,
+            runSpacing: 8,
             children:
                 [
                       ['010C', 'RPM'],
@@ -1829,14 +2466,14 @@ class _HomeScreenState extends State<HomeScreen>
                             vertical: 6,
                           ),
                           decoration: BoxDecoration(
-                            color: Colors.blue.shade50,
+                            color: AppColors.panelSoft,
                             borderRadius: BorderRadius.circular(6),
-                            border: Border.all(color: Colors.blue.shade200),
+                            border: Border.all(color: AppColors.line),
                           ),
                           child: Text(
                             '${e[0]}  ${e[1]}',
-                            style: TextStyle(
-                              color: Colors.blue.shade700,
+                            style: const TextStyle(
+                              color: AppColors.blue,
                               fontSize: 11,
                               fontFamily: 'monospace',
                               fontWeight: FontWeight.bold,

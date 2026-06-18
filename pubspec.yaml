@@ -2,7 +2,7 @@ name: car_kundali
 description: "A new Flutter project."
 publish_to: 'none'
 
-version: 1.0.3+3
+version: 1.0.4+4
 
 environment:
   sdk: ^3.9.2
@@ -19,6 +19,7 @@ dependencies:
   google_mobile_ads: ^5.1.0   # ← AdMob
   in_app_review: ^2.0.9          # Shows native Google Play review sheet
   shared_preferences: ^2.3.3     # Persists "already rated" / cooldown state
+  upgrader: ^13.5.0              # Forces users to update when Play Store has a newer build
 
 dev_dependencies:
   flutter_test:
