@@ -40,8 +40,14 @@ class _HomeScreenState extends State<HomeScreen>
   // ─── BLE ──────────────────────────────────────────────
   List<ScanResult> scanResults = [];
   BluetoothDevice? connected;
-  StreamSubscription? _scanSub, _adapterSub, _obdDataSub;
-  bool _isScanning = false, _isConnecting = false, _isLogging = false;
+  StreamSubscription? _scanSub, _adapterSub, _obdDataSub, _deviceStateSub;
+  bool _isScanning = false,
+      _isConnecting = false,
+      _isDisconnecting = false,
+      _isRefreshing = false,
+      _isLogging = false;
+  String? _connectingDeviceId;
+  final ValueNotifier<int> _deviceSheetTick = ValueNotifier(0);
 
   // ─── AD TRACKING ──────────────────────────────────────
   // AdMob policy: don't show interstitial on EVERY tap.
@@ -54,6 +60,7 @@ class _HomeScreenState extends State<HomeScreen>
   final Map<String, List<VehicleData>> _liveDataHistory = {};
   final Map<String, double> _currentValues = {};
   final ValueNotifier<Map<String, double>> _valuesNotifier = ValueNotifier({});
+  DateTime? _lastObdDataAt;
 
   // ─── VEHICLE STATE ────────────────────────────────────
   List<ReadinessMonitor> _readinessMonitors = _defaultReadiness();
@@ -72,22 +79,7 @@ class _HomeScreenState extends State<HomeScreen>
   final TextEditingController _commandController = TextEditingController();
   String _commandResponse = '';
 
-  final List<String> _monitoredPids = [
-    '010C',
-    '010D',
-    '0104',
-    '0105',
-    '010F',
-    '0110',
-    '0111',
-    '010B',
-    '0106',
-    '0107',
-    '010E',
-    '012F',
-    '0114',
-    '0142',
-  ];
+  late final List<String> _monitoredPids = ObdPidDatabase.pids.keys.toList();
 
   // ─── TRIP ─────────────────────────────────────────────
   DateTime? _tripStart;
@@ -133,10 +125,12 @@ class _HomeScreenState extends State<HomeScreen>
     _scanSub?.cancel();
     _adapterSub?.cancel();
     _obdDataSub?.cancel();
+    _deviceStateSub?.cancel();
     _autoRefreshTimer?.cancel();
     _tabs.removeListener(_syncNavIndex);
     _tabs.dispose();
     _commandController.dispose();
+    _deviceSheetTick.dispose();
     _valuesNotifier.dispose();
     _dtcNotifier.dispose();
     _obd.dispose();
@@ -184,46 +178,51 @@ class _HomeScreenState extends State<HomeScreen>
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
-      builder: (_) => DraggableScrollableSheet(
-        expand: false,
-        initialChildSize: 0.72,
-        minChildSize: 0.42,
-        maxChildSize: 0.92,
-        builder: (context, controller) {
-          return Column(
-            children: [
-              Container(
-                width: 42,
-                height: 4,
-                margin: const EdgeInsets.only(top: 10, bottom: 8),
-                decoration: BoxDecoration(
-                  color: AppColors.line,
-                  borderRadius: BorderRadius.circular(4),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 4, 8, 8),
-                child: Row(
-                  children: [
-                    const Expanded(
-                      child: Text(
-                        'Connect OBD adapter',
-                        style: TextStyle(
-                          color: AppColors.text,
-                          fontSize: 18,
-                          fontWeight: FontWeight.w900,
+      builder: (_) => ValueListenableBuilder<int>(
+        valueListenable: _deviceSheetTick,
+        builder: (context, _, __) {
+          return DraggableScrollableSheet(
+            expand: false,
+            initialChildSize: 0.72,
+            minChildSize: 0.42,
+            maxChildSize: 0.92,
+            builder: (context, controller) {
+              return Column(
+                children: [
+                  Container(
+                    width: 42,
+                    height: 4,
+                    margin: const EdgeInsets.only(top: 10, bottom: 8),
+                    decoration: BoxDecoration(
+                      color: AppColors.line,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 4, 8, 8),
+                    child: Row(
+                      children: [
+                        const Expanded(
+                          child: Text(
+                            'Connect OBD adapter',
+                            style: TextStyle(
+                              color: AppColors.text,
+                              fontSize: 18,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
                         ),
-                      ),
+                        IconButton(
+                          onPressed: () => Navigator.pop(context),
+                          icon: const Icon(Icons.close),
+                        ),
+                      ],
                     ),
-                    IconButton(
-                      onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.close),
-                    ),
-                  ],
-                ),
-              ),
-              Expanded(child: _devicesTab(controller: controller)),
-            ],
+                  ),
+                  Expanded(child: _devicesTab(controller: controller)),
+                ],
+              );
+            },
           );
         },
       ),
@@ -275,13 +274,17 @@ class _HomeScreenState extends State<HomeScreen>
       scanResults.clear();
       _isScanning = true;
     });
+    _notifyDeviceSheet();
     appendLog('🔍 Scanning...');
     _scanSub?.cancel();
     _scanSub = FlutterBluePlus.scanResults.listen((results) {
       final ids = scanResults.map((e) => e.device.remoteId.str).toSet();
       for (final r in results) {
-        if (!ids.contains(r.device.remoteId.str))
+        if (!ids.contains(r.device.remoteId.str)) {
           setState(() => scanResults.add(r));
+          ids.add(r.device.remoteId.str);
+          _notifyDeviceSheet();
+        }
       }
     });
     await FlutterBluePlus.startScan(
@@ -294,7 +297,13 @@ class _HomeScreenState extends State<HomeScreen>
       await FlutterBluePlus.stopScan();
     } catch (_) {}
     setState(() => _isScanning = false);
+    _notifyDeviceSheet();
     appendLog('✅ Found ${scanResults.length} device(s)');
+  }
+
+  void _notifyDeviceSheet() {
+    if (!mounted) return;
+    _deviceSheetTick.value++;
   }
 
   String _deviceName(ScanResult r) {
@@ -306,12 +315,22 @@ class _HomeScreenState extends State<HomeScreen>
 
   Future<void> connectDevice(BluetoothDevice device) async {
     if (_isConnecting) return;
-    setState(() => _isConnecting = true);
-    final name = _deviceName(
-      scanResults.firstWhere((r) => r.device.remoteId == device.remoteId),
+    setState(() {
+      _isConnecting = true;
+      _connectingDeviceId = device.remoteId.str;
+    });
+    _notifyDeviceSheet();
+    final match = scanResults.where(
+      (r) => r.device.remoteId == device.remoteId,
     );
+    final name = match.isNotEmpty
+        ? _deviceName(match.first)
+        : device.platformName;
     appendLog('🔗 Connecting to $name...');
     try {
+      try {
+        await device.disconnect();
+      } catch (_) {}
       await device.connect(timeout: const Duration(seconds: 15));
       appendLog('✅ BT connected');
       if (!await _obd.connect(device)) {
@@ -326,6 +345,8 @@ class _HomeScreenState extends State<HomeScreen>
         if (d.trim().isNotEmpty) _processObdResponse(d);
       });
       setState(() => connected = device);
+      _watchDeviceConnection(device);
+      _notifyDeviceSheet();
       appendLog('✅ Live!');
       _startAutoRefresh();
       _getVehicleInfo().catchError((_) {});
@@ -336,8 +357,43 @@ class _HomeScreenState extends State<HomeScreen>
         await device.disconnect();
       } catch (_) {}
     } finally {
-      setState(() => _isConnecting = false);
+      setState(() {
+        _isConnecting = false;
+        _connectingDeviceId = null;
+      });
+      _notifyDeviceSheet();
     }
+  }
+
+  void _watchDeviceConnection(BluetoothDevice device) {
+    _deviceStateSub?.cancel();
+    _deviceStateSub = device.connectionState.listen((state) {
+      if (state != BluetoothConnectionState.disconnected) return;
+      if (_isDisconnecting || connected?.remoteId != device.remoteId) return;
+      _handleUnexpectedDisconnect();
+    });
+  }
+
+  Future<void> _handleUnexpectedDisconnect({
+    String message = 'OBD disconnected. Live data and DTCs cleared.',
+  }) async {
+    if (!mounted || connected == null) return;
+    appendLog('⚠️ OBD connection lost');
+    _autoRefreshTimer?.cancel();
+    await _obdDataSub?.cancel();
+    await _deviceStateSub?.cancel();
+    _deviceStateSub = null;
+    await _obd.disconnect();
+    _clearConnectionState();
+    _notifyDeviceSheet();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.orange,
+        duration: const Duration(seconds: 3),
+      ),
+    );
   }
 
   Future<void> _initELM327() async {
@@ -358,31 +414,51 @@ class _HomeScreenState extends State<HomeScreen>
     _autoRefreshTimer?.cancel();
     _tripStart = DateTime.now();
     _lastTripTime = DateTime.now();
+    _lastObdDataAt = DateTime.now();
     _autoRefreshTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (connected != null && mounted) _refreshPids();
+      if (connected != null && mounted && !_isRefreshing) _refreshPids();
     });
   }
 
   Future<void> _refreshPids() async {
-    if (_isConnecting) return;
-    for (final pid in _monitoredPids) {
-      try {
-        await _obd.sendCommand(pid);
-        await Future.delayed(const Duration(milliseconds: 80));
-      } catch (_) {}
+    if (_isConnecting || _isDisconnecting || _isRefreshing) return;
+    _isRefreshing = true;
+    try {
+      for (final pid in _monitoredPids) {
+        if (connected == null) return;
+        try {
+          await _obd.sendCommand(pid);
+          await Future.delayed(const Duration(milliseconds: 90));
+        } catch (_) {}
+      }
+      final lastData = _lastObdDataAt;
+      if (connected != null &&
+          lastData != null &&
+          DateTime.now().difference(lastData) > const Duration(seconds: 15)) {
+        await _handleObdTimeout();
+      }
+    } finally {
+      _isRefreshing = false;
     }
+  }
+
+  Future<void> _handleObdTimeout() async {
+    if (!mounted || connected == null || _isDisconnecting) return;
+    appendLog('⚠️ No OBD data. Disconnecting.');
+    await _handleUnexpectedDisconnect(
+      message: 'No OBD data received. Connection cleared.',
+    );
   }
 
   // ══════════════════════════════════════════════════════
   // DATA PROCESSING
   // ══════════════════════════════════════════════════════
   void _processObdResponse(String raw) {
-    final cleaned = _cleanHex(raw);
+    _lastObdDataAt = DateTime.now();
+    final parts = _hexBytes(raw);
     for (final entry in ObdPidDatabase.pids.entries) {
       final pid = entry.value;
-      if (!cleaned.contains('41 ${pid.pid}')) continue;
-      final parts = cleaned.split(' ');
-      final idx = parts.indexOf('41');
+      final idx = _responseIndex(parts, pid.pid);
       if (idx < 0 || parts.length < idx + 2 + pid.bytes) continue;
       try {
         final bytes = List.generate(
@@ -418,6 +494,28 @@ class _HomeScreenState extends State<HomeScreen>
       .replaceAll(RegExp(r'\s+'), ' ')
       .trim()
       .toUpperCase();
+
+  List<String> _hexBytes(String raw) {
+    final cleaned = _cleanHex(raw);
+    final bytes = <String>[];
+    for (final token in cleaned.split(' ')) {
+      if (token.length == 2) {
+        bytes.add(token);
+      } else if (token.length > 2 && token.length.isEven) {
+        for (var i = 0; i + 1 < token.length; i += 2) {
+          bytes.add(token.substring(i, i + 2));
+        }
+      }
+    }
+    return bytes;
+  }
+
+  int _responseIndex(List<String> parts, String pid) {
+    for (var i = 0; i + 1 < parts.length; i++) {
+      if (parts[i] == '41' && parts[i + 1] == pid) return i;
+    }
+    return -1;
+  }
 
   // ══════════════════════════════════════════════════════
   // TRIP
@@ -621,6 +719,14 @@ class _HomeScreenState extends State<HomeScreen>
       _noConnSnack();
       return;
     }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Scanning DTCs...'),
+          duration: Duration(seconds: 1),
+        ),
+      );
+    }
     appendLog('🔎 Scanning DTCs...');
     await _obd.sendCommand('03');
     await Future.delayed(const Duration(milliseconds: 700));
@@ -806,22 +912,48 @@ class _HomeScreenState extends State<HomeScreen>
   // ══════════════════════════════════════════════════════
   // DISCONNECT & LOGS
   // ══════════════════════════════════════════════════════
-  Future<void> disconnectDevice() async {
-    _autoRefreshTimer?.cancel();
-    await _obdDataSub?.cancel();
-    await _obd.disconnect();
-    try {
-      await connected?.disconnect();
-    } catch (_) {}
+  void _clearConnectionState() {
+    if (!mounted) return;
     setState(() {
       connected = null;
+      _isLogging = false;
+      _dtcList = [];
+      _vehicleInfo = null;
+      _isRefreshing = false;
+      _lastObdDataAt = null;
       _currentValues.clear();
       _liveDataHistory.clear();
       _alertsSent.clear();
       _readinessMonitors = _defaultReadiness();
     });
     _valuesNotifier.value = {};
-    appendLog('✓ Disconnected');
+    _dtcNotifier.value = const [];
+  }
+
+  Future<void> disconnectDevice() async {
+    if (_isDisconnecting) return;
+    _isDisconnecting = true;
+    _autoRefreshTimer?.cancel();
+    await _obdDataSub?.cancel();
+    await _deviceStateSub?.cancel();
+    _deviceStateSub = null;
+    try {
+      await _obd.disconnect();
+      await connected?.disconnect();
+    } catch (_) {
+    } finally {
+      _clearConnectionState();
+      _isDisconnecting = false;
+      _notifyDeviceSheet();
+      appendLog('✓ Disconnected');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Disconnected. Live data and DTCs cleared.'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
   }
 
   void toggleLogging() {
@@ -929,6 +1061,13 @@ class _HomeScreenState extends State<HomeScreen>
           actions: [
             if (conn)
               IconButton(
+                tooltip: 'Disconnect adapter',
+                onPressed: disconnectDevice,
+                icon: const Icon(Icons.bluetooth_disabled),
+                color: AppColors.red,
+              ),
+            if (conn)
+              IconButton(
                 onPressed: toggleLogging,
                 icon: Icon(
                   _isLogging ? Icons.stop_circle : Icons.fiber_manual_record,
@@ -991,6 +1130,8 @@ class _HomeScreenState extends State<HomeScreen>
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 24),
       children: [
         _homeSummary(conn),
+        const SizedBox(height: 10),
+        _connectionAction(conn),
         const SizedBox(height: 10),
         _primaryActions(conn),
         const SizedBox(height: 10),
@@ -1129,6 +1270,69 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
+  Widget _connectionAction(bool conn) {
+    final deviceName = connected?.platformName.isNotEmpty == true
+        ? connected!.platformName
+        : 'OBD adapter';
+
+    return Material(
+      color: conn ? AppColors.green.withOpacity(0.12) : AppColors.panel,
+      borderRadius: BorderRadius.circular(8),
+      child: InkWell(
+        onTap: conn ? disconnectDevice : _showDeviceSheet,
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          constraints: const BoxConstraints(minHeight: 58),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: conn ? AppColors.green.withOpacity(0.45) : AppColors.line,
+            ),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                conn ? Icons.bluetooth_connected : Icons.bluetooth_searching,
+                color: conn ? AppColors.green : AppColors.blue,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      conn ? 'Connected: $deviceName' : 'Disconnected',
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: AppColors.text,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      conn
+                          ? 'Tap to disconnect and clear current data'
+                          : 'Tap to scan and connect adapter',
+                      style: const TextStyle(
+                        color: AppColors.muted,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(
+                conn ? Icons.power_settings_new : Icons.chevron_right,
+                color: conn ? AppColors.red : AppColors.muted,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _sectionTitle(String text) {
     return Text(
       text,
@@ -1239,9 +1443,7 @@ class _HomeScreenState extends State<HomeScreen>
             icon: conn ? Icons.manage_search : Icons.bluetooth_searching,
             label: conn ? 'Scan DTC' : 'Connect device',
             color: conn ? AppColors.red : AppColors.blue,
-            onTap: conn
-                ? () => scanDTC(showResultDialog: false)
-                : _showDeviceSheet,
+            onTap: conn ? () => scanDTC() : _showDeviceSheet,
           ),
         ),
         const SizedBox(width: 10),
@@ -1629,7 +1831,7 @@ class _HomeScreenState extends State<HomeScreen>
                 dtcNotifier: _dtcNotifier,
                 liveValues: _currentValues,
                 isConnected: conn,
-                onScan: () => scanDTC(showResultDialog: false),
+                onScan: () => scanDTC(),
                 onClear: () => clearDTC(rescanAfterClear: true),
               ),
             ),
@@ -1897,6 +2099,8 @@ class _HomeScreenState extends State<HomeScreen>
         ],
         ...scanResults.map((r) {
           final name = _deviceName(r);
+          final isThisDeviceConnecting =
+              _connectingDeviceId == r.device.remoteId.str;
           return Container(
             margin: const EdgeInsets.only(bottom: 10),
             decoration: BoxDecoration(
@@ -1924,7 +2128,7 @@ class _HomeScreenState extends State<HomeScreen>
                 '${r.rssi} dBm  •  ${r.device.remoteId}',
                 style: const TextStyle(fontSize: 11),
               ),
-              trailing: _isConnecting
+              trailing: isThisDeviceConnecting
                   ? const SizedBox(
                       width: 20,
                       height: 20,
@@ -1949,7 +2153,7 @@ class _HomeScreenState extends State<HomeScreen>
       dtcNotifier: _dtcNotifier,
       liveValues: _currentValues,
       isConnected: conn,
-      onScan: () => scanDTC(showResultDialog: false),
+      onScan: () => scanDTC(),
       onClear: () => clearDTC(rescanAfterClear: true),
       showAppBar: false,
     );
@@ -2078,6 +2282,7 @@ class _HomeScreenState extends State<HomeScreen>
         Expanded(
           child: LiveDataScreen(
             currentValues: _currentValues,
+            valuesNotifier: _valuesNotifier,
             historyData: _liveDataHistory,
           ),
         ),

@@ -17,28 +17,28 @@ class AdIds {
   static String get banner {
     if (_useTestIds) return 'ca-app-pub-3940256099942544/6300978111';
     return Platform.isAndroid
-        ? 'ca-app-pub-2221858776975716/5214654143'  // ← your banner id
+        ? 'ca-app-pub-2221858776975716/5214654143' // ← your banner id
         : 'ca-app-pub-2221858776975716/5214654143';
   }
 
   static String get rewarded {
     if (_useTestIds) return 'ca-app-pub-3940256099942544/5224354917';
     return Platform.isAndroid
-        ? 'ca-app-pub-2221858776975716/5134763092'  // ← your rewarded id
+        ? 'ca-app-pub-2221858776975716/5134763092' // ← your rewarded id
         : 'ca-app-pub-2221858776975716/5134763092';
   }
 
   static String get interstitial {
     if (_useTestIds) return 'ca-app-pub-3940256099942544/1033173712';
     return Platform.isAndroid
-        ? 'ca-app-pub-2221858776975716/6365606799'  // ← your interstitial id
+        ? 'ca-app-pub-2221858776975716/6365606799' // ← your interstitial id
         : 'ca-app-pub-2221858776975716/6365606799';
   }
 
   static String get native {
     if (_useTestIds) return 'ca-app-pub-3940256099942544/2247696110';
     return Platform.isAndroid
-        ? 'ca-app-pub-2221858776975716/1548035590'  // ← your native id
+        ? 'ca-app-pub-2221858776975716/1548035590' // ← your native id
         : 'ca-app-pub-2221858776975716/1548035590';
   }
 }
@@ -108,18 +108,19 @@ class AdManager {
         onAdLoaded: (ad) {
           _interstitialAd = ad;
           _interstitialReady = true;
-          _interstitialAd!.fullScreenContentCallback = FullScreenContentCallback(
-            onAdDismissedFullScreenContent: (ad) {
-              ad.dispose();
-              _interstitialReady = false;
-              loadInterstitial(); // preload next
-            },
-            onAdFailedToShowFullScreenContent: (ad, _) {
-              ad.dispose();
-              _interstitialReady = false;
-              loadInterstitial();
-            },
-          );
+          _interstitialAd!.fullScreenContentCallback =
+              FullScreenContentCallback(
+                onAdDismissedFullScreenContent: (ad) {
+                  ad.dispose();
+                  _interstitialReady = false;
+                  loadInterstitial(); // preload next
+                },
+                onAdFailedToShowFullScreenContent: (ad, _) {
+                  ad.dispose();
+                  _interstitialReady = false;
+                  loadInterstitial();
+                },
+              );
         },
         onAdFailedToLoad: (error) {
           debugPrint('Interstitial failed: $error');
@@ -167,11 +168,12 @@ class AdManager {
   }
 
   // onReward → callback when user finishes watching
-  void showRewarded({required VoidCallback onReward, VoidCallback? onNotReady}) {
+  void showRewarded({
+    required VoidCallback onReward,
+    VoidCallback? onNotReady,
+  }) {
     if (_rewardedReady && _rewardedAd != null) {
-      _rewardedAd!.show(
-        onUserEarnedReward: (_, reward) => onReward(),
-      );
+      _rewardedAd!.show(onUserEarnedReward: (_, reward) => onReward());
     } else {
       onNotReady?.call();
     }

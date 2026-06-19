@@ -7,11 +7,13 @@ import '../theme/app_theme.dart';
 
 class LiveDataScreen extends StatefulWidget {
   final Map<String, double> currentValues;
+  final ValueNotifier<Map<String, double>> valuesNotifier;
   final Map<String, List<VehicleData>> historyData;
 
   const LiveDataScreen({
     super.key,
     required this.currentValues,
+    required this.valuesNotifier,
     required this.historyData,
   });
 
@@ -26,56 +28,64 @@ class _LiveDataScreenState extends State<LiveDataScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.ink,
-      body: Column(
-        children: [
-          // Graph Section
-          if (selectedPid != null) ...[
-            Container(
-              height: 250,
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      body: ValueListenableBuilder<Map<String, double>>(
+        valueListenable: widget.valuesNotifier,
+        builder: (context, values, _) {
+          return Column(
+            children: [
+              // Graph Section
+              if (selectedPid != null) ...[
+                Container(
+                  height: 250,
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        ObdPidDatabase.getPid(selectedPid!)?.name ??
-                            selectedPid!,
-                        style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Expanded(
+                            child: Text(
+                              ObdPidDatabase.getPid(selectedPid!)?.name ??
+                                  selectedPid!,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.close),
+                            onPressed: () => setState(() => selectedPid = null),
+                          ),
+                        ],
                       ),
-                      IconButton(
-                        icon: const Icon(Icons.close),
-                        onPressed: () => setState(() => selectedPid = null),
-                      ),
+                      const SizedBox(height: 8),
+                      Expanded(child: _buildGraph(selectedPid!)),
                     ],
                   ),
-                  const SizedBox(height: 8),
-                  Expanded(child: _buildGraph(selectedPid!)),
-                ],
-              ),
-            ),
-            const Divider(height: 1),
-          ],
+                ),
+                const Divider(height: 1),
+              ],
 
-          // Parameters List
-          Expanded(
-            child: ListView(
-              padding: const EdgeInsets.all(12),
-              children: ObdPidDatabase.getCategories().map((category) {
-                return _buildCategoryCard(category);
-              }).toList(),
-            ),
-          ),
-        ],
+              // Parameters List
+              Expanded(
+                child: ListView(
+                  padding: const EdgeInsets.all(12),
+                  children: ObdPidDatabase.getCategories().map((category) {
+                    return _buildCategoryCard(category, values);
+                  }).toList(),
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
 
-  Widget _buildCategoryCard(String category) {
+  Widget _buildCategoryCard(String category, Map<String, double> values) {
     final pids = ObdPidDatabase.getPidsByCategory(category);
 
     return Card(
@@ -88,13 +98,13 @@ class _LiveDataScreenState extends State<LiveDataScreen> {
           category,
           style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
         ),
-        children: pids.map((pid) => _buildPidTile(pid)).toList(),
+        children: pids.map((pid) => _buildPidTile(pid, values)).toList(),
       ),
     );
   }
 
-  Widget _buildPidTile(ObdPid pid) {
-    final value = widget.currentValues[pid.command];
+  Widget _buildPidTile(ObdPid pid, Map<String, double> values) {
+    final value = values[pid.command] ?? widget.currentValues[pid.command];
     final hasHistory =
         widget.historyData.containsKey(pid.command) &&
         widget.historyData[pid.command]!.isNotEmpty;
@@ -109,24 +119,31 @@ class _LiveDataScreenState extends State<LiveDataScreen> {
       ),
       title: Text(pid.shortName),
       subtitle: Text(pid.name, style: const TextStyle(fontSize: 11)),
-      trailing: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          Text(
-            value != null ? '${value.toStringAsFixed(1)} ${pid.unit}' : '—',
-            style: TextStyle(
-              fontWeight: FontWeight.bold,
-              fontSize: 16,
-              color: value != null ? AppColors.text : AppColors.muted,
+      trailing: SizedBox(
+        width: 112,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerRight,
+              child: Text(
+                value != null ? '${value.toStringAsFixed(1)} ${pid.unit}' : '—',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                  color: value != null ? AppColors.text : AppColors.muted,
+                ),
+              ),
             ),
-          ),
-          if (hasHistory)
-            Text(
-              'Tap for graph',
-              style: TextStyle(fontSize: 10, color: AppColors.blue),
-            ),
-        ],
+            if (hasHistory)
+              Text(
+                'Tap for graph',
+                style: TextStyle(fontSize: 10, color: AppColors.blue),
+              ),
+          ],
+        ),
       ),
     );
   }
